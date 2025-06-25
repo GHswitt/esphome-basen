@@ -348,8 +348,7 @@ void BasenController::check_timeout ()
 
     if (retry_++ > 0) {
       // Second try, mark as offline and move to next device
-      if (current_->connected_binary_sensor_)
-        current_->connected_binary_sensor_->publish_state(false);
+      current_->set_connected(false);
 
       current_->state_ = BasenBMS::BMS_STATE_DONE;  // Mark as finished
       current_ = NULL;  // Reset current device
@@ -386,10 +385,10 @@ void BasenController::update_device ()
     return;
   }
 
-  if (!current_->bms_version_text_sensor_->has_state()) {
+  if (!current_->bms_version_received_) {
     // Get BMS version
     this->send_command(current_, COMMAND_BMS_VERSION);
-  } else if (!current_->barcode_text_sensor_->has_state()) {
+  } else if (!current_->barcode_received_) {
     // Get barcode
     this->send_command(current_, COMMAND_BARCODE);
   } else if (!current_->params_received_) {
@@ -619,6 +618,15 @@ void BasenController::loop() {
       current_->state_= BasenBMS::BMS_STATE_IDLE;
       current_ = NULL;
     }
+
+    for (auto &device : this->devices_) {
+      device->set_connected(false);
+      // Retrieve version, barcode, parameters again when enabled
+      device->bms_version_received_ = false;
+      device->barcode_received_ = false;
+      device->params_received_ = 0;
+    }
+
     set_state (STATE_BUS_CHECK);
     return;
   }
@@ -990,6 +998,7 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
         this->bms_version_text_sensor_->publish_state(std::string(reinterpret_cast<const char *>(data), length));
         ESP_LOGD(TAG, "Address: %d BMS Version: %s", this->address_, this->bms_version_text_sensor_->get_state().c_str());
       }
+      this->bms_version_received_ = true;  // Mark as received
       break;
     case COMMAND_BARCODE:
       // Barcode
@@ -997,6 +1006,7 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
         this->barcode_text_sensor_->publish_state(std::string(reinterpret_cast<const char *>(data), length));
         ESP_LOGD(TAG, "Address: %d Barcode: %s", this->address_, this->barcode_text_sensor_->get_state().c_str());
       }
+      this->barcode_received_ = true;  // Mark as received
       break;
     case (uint8_t)COMMAND_PARAMETERS:
       if (header[3] == (uint8_t)(COMMAND_PARAMETERS >> 8)) {
@@ -1011,10 +1021,7 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       handle_info(data, length);
       // All data has been updated, mark the device as updated and connected
       this->state_ = BasenBMS::BMS_STATE_PUBLISH;
-      if (this->connected_binary_sensor_) {
-        if (!this->connected_binary_sensor_->state)
-          this->connected_binary_sensor_->publish_state(true);
-      }
+      set_connected (true);
       return true;
     default:
       ESP_LOGW(TAG, "Unknown command: %02X", header[2]);

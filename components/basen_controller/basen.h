@@ -273,6 +273,8 @@ class BasenBMS : public PollingComponent {
   uint32_t last_transmission_{0};
 
   // Sensors
+  bool bms_version_received_{false};
+  bool barcode_received_{false};
   text_sensor::TextSensor *bms_version_text_sensor_{nullptr};
   text_sensor::TextSensor *barcode_text_sensor_{nullptr};
   binary_sensor::BinarySensor *connected_binary_sensor_{nullptr};
@@ -312,6 +314,18 @@ class BasenBMS : public PollingComponent {
 
   void handle_parameters (const uint8_t *data, const uint8_t length, uint16_t *params, uint8_t params_count, PARAM_OPERATION *ops, sensor::Sensor **sensors);
   
+  void set_connected (bool connected) {
+    if (this->connected_binary_sensor_ == nullptr)
+      return;
+
+    if (connected) { 
+      if (!this->connected_binary_sensor_->state)
+        this->connected_binary_sensor_->publish_state(true);
+    } else {
+      this->connected_binary_sensor_->publish_state(false);
+    }
+  }
+
 private:
   BasenController *parent_;
 
