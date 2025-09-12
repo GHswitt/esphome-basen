@@ -27,6 +27,9 @@ external_components:
 
 or just use the `esphome-basen-bms.yaml` and modify it as needed.
 
+If your RS485 transceiver does not support automatic flow control and uses a pin for manual flow control
+add `flow_control_pin: <PIN>` to the `basen_controller` component.
+
 ## Supported Sensor Metrics
 
 - connected: Indicates if the BMS is currently connected (online status).

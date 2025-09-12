@@ -17,6 +17,7 @@ class BasenBMS;  // Forward declaration
 class BasenController : public uart::UARTDevice, public Component {
  public:
   void set_throttle(uint32_t throttle) { this->throttle_ = throttle; }
+  void set_flow_control_pin(GPIOPin *flow_control_pin) { this->flow_control_pin_ = flow_control_pin; }
 
   void register_bms(BasenBMS *bms) {
     this->devices_.push_back(bms);
@@ -29,6 +30,10 @@ class BasenController : public uart::UARTDevice, public Component {
     this->parent_->set_stop_bits(1);
     this->parent_->set_data_bits(8);
     this->parent_->set_parity(uart::UART_CONFIG_PARITY_NONE);
+
+    if (this->flow_control_pin_ != nullptr) {
+      this->flow_control_pin_->setup();
+  }
   }
   void dump_config() override;
   void loop() override;
@@ -74,6 +79,8 @@ class BasenController : public uart::UARTDevice, public Component {
   uint16_t command_delay_{100};  // Delay between commands in ms
   uint16_t timeout_{2000};       // Timeout for command response in ms
   uint8_t  retry_{0};            // Retry counter
+
+  GPIOPin *flow_control_pin_{nullptr};
 
   std::vector<BasenBMS *> devices_;
   BasenBMS *current_{nullptr};  // Pointer to the currently processing BMS

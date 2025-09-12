@@ -213,6 +213,7 @@ static BasenBMS::PARAM_OPERATION alarm_param_op[] = {
  */
 void BasenController::dump_config() {
   ESP_LOGI(TAG, "Basen:");
+  LOG_PIN(" Flow Control Pin: ", this->flow_control_pin_);
 
   for (auto &device : this->devices_) {
     ESP_LOGI(TAG, " Device %02X:", device->address_);
@@ -315,8 +316,16 @@ void BasenController::send_command(BasenBMS *BMS, const uint16_t command) {
   // 7e 01 33 00 fe 0d
   data[4] = this->checksum(data, 4);
 
+  if (this->flow_control_pin_ != nullptr)
+    this->flow_control_pin_->digital_write(true);
+
   write_array(data, sizeof(data));
   
+  if (this->flow_control_pin_ != nullptr) {
+    this->flush();
+    this->flow_control_pin_->digital_write(false);
+  }
+
   memcpy(this->header_, data, sizeof(header_));
 
   ESP_LOGV(TAG, "Sending command: %02X %02X %02X %02X %02X %02X", data[0], data[1], data[2], data[3], data[4], data[5]);
