@@ -40,6 +40,8 @@ add `flow_control_pin: <PIN>` to the `basen_controller` component.
 - alarm: Alarm status.
 - fault: Fault status.
 - error_bitmask: Error bitmask created from status bitmask, see error_bitmask definition below.
+- charging_enabled: True when the charge MosFET is enabled.
+- discharging_enabled: True when the discharge MosFET is enabled.
 
 - voltage: Battery voltage (V)
 - current: Battery current (A)
@@ -109,6 +111,7 @@ The following status messages can be decoded, though many have not been tested d
 - Discharging
 - Short Circuit Protection
 - Overcurrent Protection
+- Overvoltage Protection
 - CHG_OV_TEMP_Protection
 - CHG_UN_TEMP_Protection
 - Ambient_Low_TEMP_Protection

@@ -17,6 +17,10 @@ binary_sensor:
       name: "${name} Alarm"
     fault:
       name: "${name} Fault"
+    charging_enabled:
+      name: "${name} Charging Enabled"
+    discharging_enabled:
+      name: "${name} Discharging Enabled"
 
 sensor:
   - platform: basen_bms

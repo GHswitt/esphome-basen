@@ -58,11 +58,14 @@ static struct {
   {1, 0x80, 2, 0x0801, "Secondary trip protection"},
   {2, 0x01, 2, 0x0008, "DISC_OV_TEMP_Protection"},
   {2, 0x02, 2, 0x0010, "DISC_UN_TEMP_Protection"},
+  {2, 0x10, 2, 0x0001, "CHG_MOS_Off"},
+  {2, 0x20, 2, 0x0001, "DISC_MOS_Off"},
   {2, 0x40, 1, 0x0800, "536_COM_Timeout"},
   {3, 0x01, 0, 0x0000, "Charging"},
   {3, 0x02, 0, 0x0000, "Discharging"},
   {3, 0x04, 2, 0x0400, "Short Circuit Protection"},
   {3, 0x08, 2, 0x0080, "Overcurrent Protection"},
+  {3, 0x10, 2, 0x0002, "Overvoltage Protection"}, // Cell/battery details stored in another place
   {3, 0x40, 2, 0x0020, "CHG_OV_TEMP_Protection"},
   {3, 0x80, 2, 0x0040, "CHG_UN_TEMP_Protection"},
   {4, 0x01, 2, 0x0010, "Ambient_Low_TEMP_Protection"},
@@ -745,6 +748,14 @@ void BasenBMS::publish_status()
   }
   if (this->fault_binary_sensor_) {
     this->fault_binary_sensor_->publish_state(fault);
+  }
+  if (this->charging_enabled_binary_sensor_) {
+    // Check if charge MosFET is off: Byte 2, Bit 4 (0x10)
+    this->charging_enabled_binary_sensor_->publish_state(!(this->status_bitmask_[2] & 0x10));
+  }
+  if (this->discharging_enabled_binary_sensor_) {
+    // Check if discharge MosFET is off: Byte 2, Bit 5 (0x20)
+    this->discharging_enabled_binary_sensor_->publish_state(!(this->status_bitmask_[2] & 0x20));
   }
   if (this->error_bitmask_sensor_)
     this->error_bitmask_sensor_->publish_state(error_bitmask);
