@@ -340,7 +340,7 @@ def add_param_sensor(schema, param):
                 unit_of_measurement=UNIT_MILLISECOND,
                 icon="mdi:timer-sand",
                 accuracy_decimals=0,
-                device_class=DEVICE_CLASS_VOLTAGE
+                device_class=DEVICE_CLASS_EMPTY
             )
         })
     elif "Time" in param:
@@ -349,7 +349,7 @@ def add_param_sensor(schema, param):
                 unit_of_measurement=UNIT_MINUTE,
                 icon="mdi:timer-sand",
                 accuracy_decimals=0,
-                device_class=DEVICE_CLASS_VOLTAGE
+                device_class=DEVICE_CLASS_EMPTY
             )
         })
     elif "OT" in param or "UT" in param:
