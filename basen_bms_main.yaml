@@ -21,6 +21,8 @@ binary_sensor:
       name: "${name} Charging Enabled"
     discharging_enabled:
       name: "${name} Discharging Enabled"
+    heating_status:
+      name: "${name} Heating Status"
 
 sensor:
   - platform: basen_bms

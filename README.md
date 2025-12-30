@@ -3,7 +3,7 @@ Basengreen BMS component for ESPHome
 
 ESPHome component to monitor a Basen Battery Management System (Basen-BMS) via RS485
 
-*This is work in progress!* Currently, the component is under active development, and some features or sensors may not be fully implemented or tested. Contributions and feedback are welcome to improve functionality and reliability.
+Contributions and feedback are welcome to improve functionality.
 
 I created this component to read out the BMS battery information from the Basengreen 48V DIY kit BMS as I've found no solutions that worked with my BMS version.
 The BMS reports as *HY-CW007-B200LT55-V1.0.0*.
@@ -42,6 +42,7 @@ add `flow_control_pin: <PIN>` to the `basen_controller` component.
 - error_bitmask: Error bitmask created from status bitmask, see error_bitmask definition below.
 - charging_enabled: True when the charge MosFET is enabled.
 - discharging_enabled: True when the discharge MosFET is enabled.
+- heating_status: True when the heating (pad) MosFET is enabled.
 
 - voltage: Battery voltage (V)
 - current: Battery current (A)

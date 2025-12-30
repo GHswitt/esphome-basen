@@ -183,6 +183,9 @@ class BasenBMS : public PollingComponent {
   void set_discharging_enabled_binary_sensor(binary_sensor::BinarySensor *binary_sensor) {
     discharging_enabled_binary_sensor_ = binary_sensor;
   }
+  void set_heating_status_binary_sensor(binary_sensor::BinarySensor *binary_sensor) {
+    heating_status_binary_sensor_ = binary_sensor;
+  }
 
   void set_voltage_sensor(sensor::Sensor *sensor) {
     voltage_sensor_ = sensor;
@@ -295,6 +298,7 @@ class BasenBMS : public PollingComponent {
   binary_sensor::BinarySensor *fault_binary_sensor_{nullptr};
   binary_sensor::BinarySensor *charging_enabled_binary_sensor_{nullptr};
   binary_sensor::BinarySensor *discharging_enabled_binary_sensor_{nullptr};
+  binary_sensor::BinarySensor *heating_status_binary_sensor_{nullptr};
 
   // Sensors for BMS data
   float voltage_{0.0f};

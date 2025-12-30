@@ -14,6 +14,7 @@ CONF_ALARM = "alarm"
 CONF_FAULT = "fault"
 CONF_CHARGING_ENABLED = "charging_enabled"
 CONF_DISCHARGING_ENABLED = "discharging_enabled"
+CONF_HEATING_STATUS = "heating_status"
 
 BINARY_SENSORS = [
     CONF_CONNECTED,
@@ -21,6 +22,7 @@ BINARY_SENSORS = [
     CONF_FAULT,
     CONF_CHARGING_ENABLED,
     CONF_DISCHARGING_ENABLED,
+    CONF_HEATING_STATUS,
 ]
 
 CONFIG_SCHEMA = cv.Schema(
@@ -40,6 +42,9 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_DISCHARGING_ENABLED): binary_sensor.binary_sensor_schema(
             icon="mdi:battery-arrow-down"
+        ),
+        cv.Optional(CONF_HEATING_STATUS): binary_sensor.binary_sensor_schema(
+            icon="mdi:radiator"
         ),
     }
 )

@@ -39,9 +39,9 @@ constexpr uint16_t COMMAND_ALARM_PARAMETERS  = 0x43;
 static struct {
   uint8_t     offset;     // Byte offset
   uint8_t     bit;        // Bit
-  uint8_t     type;       // Type: 1 - Alarm, 2 - Fault
+  uint8_t     type;       // Type: 0 = None, 1 - Alarm, 2 - Fault
   uint16_t    error_mask; // 16-bit error mask described above
-  const char  *message; // Message text
+  const char  *message;   // Message text
 } status_messages[] = {
   {0, 0x08, 2, 0x0004, "Cell voltage low fault"},
   {0, 0x10, 2, 0x0200, "Voltage line break"},
@@ -756,6 +756,10 @@ void BasenBMS::publish_status()
   if (this->discharging_enabled_binary_sensor_) {
     // Check if discharge MosFET is off: Byte 2, Bit 5 (0x20)
     this->discharging_enabled_binary_sensor_->publish_state(!(this->status_bitmask_[2] & 0x20));
+  }
+  if (this->heating_status_binary_sensor_) {
+    // Check if heating MosFET is on: Byte 5, Bit 4 (0x10)
+    this->heating_status_binary_sensor_->publish_state(this->status_bitmask_[5] & 0x10);
   }
   if (this->error_bitmask_sensor_)
     this->error_bitmask_sensor_->publish_state(error_bitmask);
