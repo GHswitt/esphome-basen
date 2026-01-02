@@ -5,7 +5,7 @@ from esphome.const import CONF_ID, CONF_THROTTLE
 
 from ..basen_controller import CONF_BASEN_CONTROLLER_ID
 
-AUTO_LOAD = ["basen_controller", "binary_sensor", "sensor", "text_sensor"]
+AUTO_LOAD = ["basen_controller", "binary_sensor", "sensor", "text_sensor", "number", "button", "switch"]
 
 #DEPENDENCIES = ["basen_controller"]
 

@@ -256,6 +256,17 @@ Additionally the following protection parameters are read (one time during start
 - LC_Style
 - Sleep_Time
 
+## Control options
+
+The temperature limits for enabling/disabling the heating output can be configured with a `number`.
+
+- Heating on temperature
+- Heating off temperature
+
+Additionaly the state of the heating output can be controlled by a `switch`.
+
+- Heating
+
 ## BMS Serial Protocol Description
 
 The BMS uses a custom UART serial protocol for communication. Below is a summary of the protocol structure and behavior:
@@ -288,6 +299,9 @@ Each frame (command or response) consists of the following bytes:
 - `0x33`: BMS Version
 - `0x42`: Barcode
 - `0x43 0xE0`: Protection parameters
+- `0xF1/0xF2`: Heating on temperature
+- `0xF3/0xF4`: Heating off temperature
+- `0xE3`: Heating control
 
 ### Example Command Frame
 
