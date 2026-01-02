@@ -8,15 +8,6 @@ namespace basen {
 
 static const char *const TAG = "basen";
 
-constexpr uint8_t SOI = 0x7E;
-constexpr uint8_t EOI = 0x0D;
-
-constexpr uint8_t COMMAND_INFO         = 0x01;
-constexpr uint8_t COMMAND_BMS_VERSION  = 0x33;
-constexpr uint8_t COMMAND_BARCODE      = 0x42;
-constexpr uint16_t COMMAND_PARAMETERS  = 0xE043;
-constexpr uint16_t COMMAND_ALARM_PARAMETERS  = 0x43;
-
 // For ease of use, generate this bit mask from status bit mask
 // # Bit 0     General alarm                                0000 0000 0000 0001         0x0001 
 // # Bit 1     Battery high voltage alarm                   0000 0000 0000 0010         0x0002
@@ -299,43 +290,57 @@ uint8_t BasenController::checksum (const uint8_t *data, uint8_t len) {
 }
 
 /**
- * @brief Sends a command to the specified BasenBMS device.
+ * @brief Calculates a checksum for a given vector.
  *
- * Constructs a command packet with the given command and BMS address,
- * calculates the checksum, and transmits the packet. The function also
- * updates internal state and timestamps for command transmission.
+ * This function computes a checksum by iterating over the input data array,
+ * performing an XOR operation on each byte to accumulate `num1`, and summing
+ * all bytes to accumulate `num2`. The final checksum is obtained by XOR'ing
+ * `num1` and `num2`, and masking the result to 8 bits.
  *
- * @param BMS Pointer to the BasenBMS device to which the command will be sent.
- * @param command The 16-bit command code to send.
+ * @param frame Reference to the input data vector.
+ * 
  */
-void BasenController::send_command(BasenBMS *BMS, const uint16_t command) {
-  uint8_t data[6] = {SOI, BMS->address_, (uint8_t)(command & 0xFF), (uint8_t)(command >> 8), 0xFE, EOI};
+void BasenController::add_checksum (std::vector<uint8_t> &frame) {
+  uint8_t num1 = 0;
+  uint16_t num2 = 0;
 
-  // Calculate checksum
-  // Examples: (Checksum byte is before EOI 0x0d)
-  // 7e 01 01 00 fe 0d
-  // 7e 01 42 00 fc 0d
-  // 7e 01 dc 03 06 00 00 c2 0d
-  // 7e 01 33 00 fe 0d
-  data[4] = this->checksum(data, 4);
+  for (uint8_t i = 0; i < frame.size(); i++) {
+      num1 ^= frame[i];
+      num2 += frame[i];
+  }
 
+  frame.push_back((uint8_t)((num1 ^ num2) & 0xFF));
+}
+
+/**
+ * @brief Sends a frame to the specified BasenBMS device.
+ *
+ * This method sends a command frame to the given BasenBMS device over UART.
+ * If a flow control pin is configured, it sets the pin high before sending
+ * the frame and sets it low after flushing the UART buffer.
+ * Updates the last command and last transmission timestamps.
+ *
+ * @param command The BasenCommand containing the frame to be sent.
+ */
+void BasenController::send_frame(BasenCommand &command) {
   if (this->flow_control_pin_ != nullptr)
     this->flow_control_pin_->digital_write(true);
 
-  write_array(data, sizeof(data));
+  write_array(command.frame);
   
   if (this->flow_control_pin_ != nullptr) {
     this->flush();
     this->flow_control_pin_->digital_write(false);
   }
 
-  memcpy(this->header_, data, sizeof(header_));
+  // TODO
+  memcpy(this->header_, command.frame.data(), sizeof(header_));
 
-  ESP_LOGV(TAG, "Sending command: %02X %02X %02X %02X %02X %02X", data[0], data[1], data[2], data[3], data[4], data[5]);
+  ESP_LOGV(TAG, "Sending frame[%d]: %02X %02X %02X %02X %02X %02X", command.frame.size (), command.frame[0], command.frame[1], command.frame[2], command.frame[3], command.frame[4], command.frame[5]);
 
   uint32_t now = millis();
   this->last_command_ = now;
-  BMS->last_transmission_ = now;
+  command.BMS->last_transmission_ = now;
 
   set_state (STATE_COMMAND_TX);
 }
@@ -361,6 +366,7 @@ void BasenController::check_timeout ()
     if (retry_++ > 0) {
       // Second try, mark as offline and move to next device
       current_->set_connected(false);
+      current_->tx_buffer_.clear();
 
       current_->state_ = BasenBMS::BMS_STATE_DONE;  // Mark as finished
       current_ = NULL;  // Reset current device
@@ -397,21 +403,14 @@ void BasenController::update_device ()
     return;
   }
 
-  if (!current_->bms_version_received_) {
-    // Get BMS version
-    this->send_command(current_, COMMAND_BMS_VERSION);
-  } else if (!current_->barcode_received_) {
-    // Get barcode
-    this->send_command(current_, COMMAND_BARCODE);
-  } else if (!current_->params_received_) {
-    // Get parameters
-    this->send_command(current_, COMMAND_PARAMETERS);
-  } else if (current_->params_received_ == 1) {
-    // Get alarm parameters
-    this->send_command(current_, COMMAND_ALARM_PARAMETERS);
-  } else if ((now-current_->last_transmission_) > 1000) {
-    // Get info
-    this->send_command(current_, COMMAND_INFO);
+  if ((now-current_->last_transmission_) > 1000) {
+    if (current_->tx_buffer_.empty()) {
+      // Should not come here with empty queue
+      current_->queue_command (COMMAND_INFO);
+    }
+
+    BasenCommand command = current_->tx_buffer_.front();
+    this->send_frame(command);
   }
 }
 
@@ -547,8 +546,17 @@ void BasenController::uart_loop() {
     // 04H CID2 Invalid
     // 05H Command Format Error
     // 06H Invalid data
-    ESP_LOGW(TAG, "Received error: %02X %02X %02X %02%", frame_[1], frame_[2], frame_[3], frame_[4]);
-    set_state (STATE_BUS_CHECK);
+    current_->handle_status ((frame_[1] | (uint16_t)frame_[2] << 8), frame_[4]);
+
+    // 00 = success
+    if (frame_[4] == 0x00) {
+      ESP_LOGD(TAG, "Received success: %02X %02X %02X", frame_[1], frame_[2], frame_[3]);
+      set_state (STATE_IDLE);
+    } else {
+      ESP_LOGW(TAG, "Received error: %02X %02X %02X %02X", frame_[1], frame_[2], frame_[3], frame_[4]);
+      set_state (STATE_BUS_CHECK);
+    }
+
     return;
   }
 
@@ -569,7 +577,7 @@ void BasenController::uart_loop() {
   uint8_t data_size = frame_[3];
 
   // Verify checksum
-  uint8_t checksum = this->checksum(frame_, sizeof(header_) + data_size);
+  uint8_t checksum = BasenController::checksum(frame_, sizeof(header_) + data_size);
   
   if (checksum != data[data_size]) {
     ESP_LOGW(TAG, "Checksum mismatch: %02X != %02X", checksum, data[data_size]);
@@ -604,6 +612,7 @@ void BasenController::queue_device(BasenBMS *device) {
   device->state_ = BasenBMS::BMS_STATE_UPDATING;
   current_ = device;
   retry_ = 0;
+  
   ESP_LOGV(TAG, "Active device with address %02X", device->address_);
 }
 
@@ -633,10 +642,9 @@ void BasenController::loop() {
 
     for (auto &device : this->devices_) {
       device->set_connected(false);
+      device->tx_buffer_.clear();
       // Retrieve version, barcode, parameters again when enabled
-      device->bms_version_received_ = false;
-      device->barcode_received_ = false;
-      device->params_received_ = 0;
+      device->add_startup_commands();
     }
 
     set_state (STATE_BUS_CHECK);
@@ -673,6 +681,17 @@ void BasenController::loop() {
 
   // Call the UART loop
   uart_loop();
+}
+
+/**
+ * @brief Sets up the BasenBMS device.
+ *
+ * This method initializes the BasenBMS by adding startup commands
+ * that will be executed when the device is set up.
+ */
+void BasenBMS::setup() {
+  // Add startup commands
+  this->add_startup_commands();
 }
 
 /**
@@ -760,6 +779,11 @@ void BasenBMS::publish_status()
   if (this->heating_status_binary_sensor_) {
     // Check if heating MosFET is on: Byte 5, Bit 4 (0x10)
     this->heating_status_binary_sensor_->publish_state(this->status_bitmask_[5] & 0x10);
+  }
+  // Set heating switch value
+  if (this->heating_switch_) {
+    // Check if heating MosFET is on: Byte 5, Bit 4 (0x10)
+    this->heating_switch_->set_state_and_enable (this->status_bitmask_[5] & 0x10);
   }
   if (this->error_bitmask_sensor_)
     this->error_bitmask_sensor_->publish_state(error_bitmask);
@@ -983,7 +1007,8 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
         this->soh_ = data16 / 100.0f;
         break;
       default:        
-        ESP_LOGV(TAG, "Data type %02X with count %d", type, count);
+        //ESP_LOGV(TAG, "Data type %02X with count %d", type, count);
+        break;
     }
 
     // Advance to next data type
@@ -996,6 +1021,113 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
     length -= data_size;
     position += data_size;
   }
+}
+
+/**
+ * @brief Queues a command to be sent to the BasenBMS.
+ * 
+ * This function constructs a command frame with the specified command,
+ * calculates the checksum, and appends it to the transmission buffer.
+ * 
+ * @param command The command to be sent to the BasenBMS.
+ */
+void BasenBMS::queue_command(const uint16_t command) {
+  std::vector<uint8_t> frame = {SOI, this->address_, (uint8_t)(command & 0xFF), (uint8_t)(command >> 8)};
+
+  // Calculate checksum
+  // Examples: (Checksum byte is before EOI 0x0d)
+  // 7e 01 01 00 fe 0d
+  // 7e 01 42 00 fc 0d
+  // 7e 01 dc 03 06 00 00 c2 0d
+  // 7e 01 33 00 fe 0d
+  BasenController::add_checksum(frame);
+
+  // Add EOI
+  frame.push_back(EOI);
+
+  this->tx_buffer_.push_back({this, frame});
+}
+
+/**
+ * @brief Queues a command with data to be sent to the BasenBMS.
+ * 
+ * This function constructs a command frame with the specified command,
+ * calculates the checksum, and appends it to the transmission buffer.
+ * 
+ * @param command The command to be sent to the BasenBMS.
+ * @param data    A vector containing the data to be sent with the command.
+ */
+void BasenBMS::queue_data(const uint8_t command, std::vector<uint8_t> &data) {
+  std::vector<uint8_t> frame = {SOI, this->address_, command, (uint8_t)(data.size())};
+
+  // Add data
+  frame.insert(frame.end(), data.begin(), data.end());
+
+  // Add checksum
+  BasenController::add_checksum(frame);
+
+  // Add EOI
+  frame.push_back(EOI);
+
+  this->tx_buffer_.push_back({this, frame});
+}
+
+/**
+ * @brief Add startup commands to the TX buffer.
+ */
+void BasenBMS::add_startup_commands() {
+  this->queue_command(COMMAND_BMS_VERSION);
+  this->queue_command(COMMAND_BARCODE);
+  this->queue_command(COMMAND_PARAMETERS);
+  this->queue_command(COMMAND_ALARM_PARAMETERS);
+  this->queue_command(COMMAND_HEATING_ON_TEMPERATURE);
+  this->queue_command(COMMAND_HEATING_OFF_TEMPERATURE);
+  this->queue_command(COMMAND_INFO);
+}
+
+/**
+ * @brief Handles incoming status frame from the BasenController.
+ *
+ * This function processes status frames received from the BMS (Battery Management System).
+ * It removes the current frame from the transmission buffer.
+ * 
+ * @param command The command associated with the status frame.
+ * @param status_code The status code received from the BMS.
+ * 
+ */
+void BasenBMS::handle_status (const uint16_t command, const uint8_t status_code) {
+  // Remove current frame from TX buffer
+  if (!tx_buffer_.empty()) {
+    tx_buffer_.pop_front();
+  }
+
+  switch (command & 0xFF) {
+    case COMMAND_HEATING_ON_TEMPERATURE_WRITE:
+    case COMMAND_HEATING_OFF_TEMPERATURE_WRITE:
+      if (status_code == 0x00) {
+        ESP_LOGD(TAG, "Heating temperature command successful for address %02X", this->address_);
+      } else {
+        ESP_LOGW(TAG, "Heating temperature command failed with status %02X for address %02X", status_code, this->address_);
+        // Read back the current temperature
+        if ((command & 0xFF) == COMMAND_HEATING_ON_TEMPERATURE_WRITE) {
+          this->queue_command(COMMAND_HEATING_ON_TEMPERATURE);
+        } else {
+          this->queue_command(COMMAND_HEATING_OFF_TEMPERATURE);
+        }
+      }
+      break;
+    case COMMAND_HEATING_SET:
+      if (status_code == 0x00) {
+        ESP_LOGD(TAG, "Heating set command successful for address %02X", this->address_);
+      } else {
+        ESP_LOGW(TAG, "Heating set command failed with status %02X for address %02X", status_code, this->address_);
+      }
+      break;
+    default:
+      break;
+  }
+
+  return;
 }
 
 /**
@@ -1014,6 +1146,11 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
  *         false - Waiting for next data
  */
 bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t length) {
+  // Remove current frame from TX buffer
+  if (!this->tx_buffer_.empty()) {
+    this->tx_buffer_.pop_front();
+  }
+
   // Handle data based on the command
   switch (header[2]) {
     case COMMAND_BMS_VERSION:
@@ -1022,7 +1159,6 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
         this->bms_version_text_sensor_->publish_state(std::string(reinterpret_cast<const char *>(data), length));
         ESP_LOGD(TAG, "Address: %d BMS Version: %s", this->address_, this->bms_version_text_sensor_->get_state().c_str());
       }
-      this->bms_version_received_ = true;  // Mark as received
       break;
     case COMMAND_BARCODE:
       // Barcode
@@ -1030,7 +1166,6 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
         this->barcode_text_sensor_->publish_state(std::string(reinterpret_cast<const char *>(data), length));
         ESP_LOGD(TAG, "Address: %d Barcode: %s", this->address_, this->barcode_text_sensor_->get_state().c_str());
       }
-      this->barcode_received_ = true;  // Mark as received
       break;
     case (uint8_t)COMMAND_PARAMETERS:
       if (header[3] == (uint8_t)(COMMAND_PARAMETERS >> 8)) {
@@ -1039,6 +1174,22 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       } else {
         ESP_LOGV(TAG, "Received alarm parameters");
         handle_parameters(data, length, this->params_alarm_, BASEN_BMS_ALARM_PARAMETERS, alarm_param_op, this->param_alarm_sensor_);
+      }
+      break;
+    case COMMAND_HEATING_ON_TEMPERATURE:
+      if (length < 4) {
+        ESP_LOGW(TAG, "Invalid length for COMMAND_HEATING_ON_TEMPERATURE: %d", length);
+      } else if (this->heating_on_temperature_number_) {
+        ESP_LOGV(TAG, "Heating on temperature: %d", (data[2] << 8) | data[3]);
+        this->heating_on_temperature_number_->publish_state(((data[2] << 8) | data[3]) - 50.0f);
+      }
+      break;
+    case COMMAND_HEATING_OFF_TEMPERATURE:
+      if (length < 4) {
+        ESP_LOGW(TAG, "Invalid length for COMMAND_HEATING_OFF_TEMPERATURE: %d", length);
+      } else if (this->heating_off_temperature_number_) {
+        ESP_LOGV(TAG, "Heating off temperature: %d", (data[2] << 8) | data[3]);
+        this->heating_off_temperature_number_->publish_state(((data[2] << 8) | data[3]) - 50.0f);
       }
       break;
     case COMMAND_INFO:
@@ -1106,7 +1257,7 @@ uint8_t BasenBMS::handle_cell_voltages (const uint8_t *data, uint8_t length) {
       else
         this->cell_balancing_ &= ~(1 << i);      
     }
-    ESP_LOGV(TAG, "Cell %d voltage: %.3f V", i + 1, voltage_V);
+    //ESP_LOGV(TAG, "Cell %d voltage: %.3f V", i + 1, voltage_V);
 
     // Update average, min and max voltages
     cell_avg_voltage += voltage_V;
@@ -1154,8 +1305,6 @@ uint8_t BasenBMS::handle_cell_voltages (const uint8_t *data, uint8_t length) {
  * @param length Length of the data buffer.
  */
 void BasenBMS::handle_parameters (const uint8_t *data, const uint8_t length, uint16_t *params, uint8_t params_count, PARAM_OPERATION *ops, sensor::Sensor **sensors) {
-  params_received_++;  // Mark parameters as received
-
   if (length < 4) {
     ESP_LOGW(TAG, "Invalid length for COMMAND_PARAMETERS: %d", length);
     return;
@@ -1210,6 +1359,102 @@ void BasenBMS::handle_parameters (const uint8_t *data, const uint8_t length, uin
 
 void BasenBMS::dump_config() {
 
+}
+
+void BasenNumber::dump_config() {
+  LOG_NUMBER("", "BasenNumber", this);
+}
+
+void BasenNumber::control(float value) {
+  if (this->parent_ == nullptr) {
+      ESP_LOGE("BasenNumber", "Parent is null");
+      return;
+  }
+  if (this->type_ == 0) {
+    ESP_LOGE("BasenNumber", "Parameter type is not set");
+    return;
+  }
+
+  // TODO
+  if (this->type_ != COMMAND_HEATING_ON_TEMPERATURE_WRITE &&
+      this->type_ != COMMAND_HEATING_OFF_TEMPERATURE_WRITE) {
+    ESP_LOGE("BasenNumber", "Unsupported parameter type: %d", this->type_);
+    return;
+  }
+
+  // Convert temperature value
+  uint16_t int_value = static_cast<uint16_t>(value);
+
+  this->publish_state(int_value);
+
+  int_value += 50;  // Offset by 50
+
+  // High byte first
+  std::vector<uint8_t> data = {static_cast<uint8_t>((int_value >> 8) & 0xFF), static_cast<uint8_t>(int_value & 0xFF)};
+
+  // Add to parent's TX buffer
+  this->parent_->queue_data(this->type_, data);
+}
+
+void BasenButton::dump_config() {
+  LOG_BUTTON("", "BasenButton", this);
+}
+
+void BasenButton::press_action() {
+  if (this->parent_ == nullptr) {
+      ESP_LOGE("BasenButton", "Parent is null");
+      return;
+  }
+  if (this->type_ == 0) {
+    ESP_LOGE("BasenNumber", "Parameter type is not set");
+    return;
+  }
+
+  // TODO
+  if (this->type_ != COMMAND_HEATING_SET) {
+    ESP_LOGE("BasenButton", "Unsupported parameter type: %d", this->type_);
+    return;
+  }
+
+  // Data
+  std::vector<uint8_t> data = {static_cast<uint8_t>(this->data_)};
+
+  // Add to parent's TX buffer
+  this->parent_->queue_data(this->type_, data);
+}
+
+BasenSwitch::BasenSwitch(bool initial_state) {
+  this->write_state(initial_state);
+}
+
+void BasenSwitch::dump_config() {
+  LOG_SWITCH("", "BasenSwitch", this);
+}
+
+void BasenSwitch::write_state(bool state) {
+  if (this->parent_ == nullptr) {
+    ESP_LOGE(TAG, "Parent is null");
+    return;
+  }
+
+  if (this->type_ != COMMAND_HEATING_SET) {
+    ESP_LOGE(TAG, "Parameter type is unsupported: %d", this->type_);
+    return;
+  }
+
+  this->publish_state(state);
+
+  // Check if write is allowed
+  if (!this->allow_write_) {
+    ESP_LOGI (TAG, "Write not allowed for register address: %04X", this->type_);
+    return;
+  }
+
+  // Data
+  std::vector<uint8_t> data = {static_cast<uint8_t>(this->data_[state ? 0 : 1])};
+
+  // Add to parent's TX buffer
+  this->parent_->queue_data(this->type_, data);
 }
 
 }  // namespace basen

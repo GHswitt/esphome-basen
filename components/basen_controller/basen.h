@@ -4,15 +4,44 @@
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
+#include "esphome/components/number/number.h"
+#include "esphome/components/button/button.h"
+#include "esphome/components/switch/switch.h"
 #include "esphome/components/uart/uart.h"
+
+#include <vector>
+#include <deque>
 
 namespace esphome {
 namespace basen {
 
 class BasenBMS;  // Forward declaration
 
+// Frame start and end indicators
+constexpr uint8_t SOI = 0x7E;
+constexpr uint8_t EOI = 0x0D;
+constexpr uint8_t HEADER_SIZE = 4;
+
+// Command codes
+constexpr uint8_t  COMMAND_INFO                           = 0x01;
+constexpr uint8_t  COMMAND_BMS_VERSION                    = 0x33;
+constexpr uint8_t  COMMAND_BARCODE                        = 0x42;
+constexpr uint16_t COMMAND_PARAMETERS                     = 0xE043;
+constexpr uint16_t COMMAND_ALARM_PARAMETERS               = 0x43;
+constexpr uint8_t  COMMAND_HEATING_ON_TEMPERATURE         = 0x00F1;
+constexpr uint8_t  COMMAND_HEATING_ON_TEMPERATURE_WRITE   = 0x00F2;
+constexpr uint8_t  COMMAND_HEATING_OFF_TEMPERATURE        = 0x00F3;
+constexpr uint8_t  COMMAND_HEATING_OFF_TEMPERATURE_WRITE  = 0x00F4;
+constexpr uint8_t  COMMAND_HEATING_SET                    = 0xE3;
+
+// Number of parameters
 #define BASEN_BMS_PROTECT_PARAMETERS  0x33
 #define BASEN_BMS_ALARM_PARAMETERS    0x2F
+
+struct BasenCommand {
+  BasenBMS              *BMS;
+  std::vector<uint8_t>  frame;
+};
 
 class BasenController : public uart::UARTDevice, public Component {
  public:
@@ -40,12 +69,14 @@ class BasenController : public uart::UARTDevice, public Component {
 
   float get_setup_priority() const override { return setup_priority::DATA; }
 
+  static void add_checksum (std::vector<uint8_t> &frame);
+
  protected:
   void set_state(uint8_t state);
   bool empty_rx (void);
   uint8_t checksum (const uint8_t *data, uint8_t len);
-  void send_command(BasenBMS *BMS, const uint16_t command);
-
+  
+  void send_frame(BasenCommand &command);
   void queue_device(BasenBMS *bms);
   void update_device();
   void check_timeout();
@@ -62,8 +93,8 @@ class BasenController : public uart::UARTDevice, public Component {
 
   uint8_t state_{STATE_BUS_CHECK};
 
-  // Sent header
-  uint8_t header_[4]{0};
+  // Header
+  uint8_t header_[HEADER_SIZE]{0};
   // Buffer for received data
   uint8_t frame_[256]{0};
   // Length of the received data  
@@ -142,10 +173,84 @@ class BasenController : public uart::UARTDevice, public Component {
   //   uint16_t Sleep_Time;                   // 0x32
   // } PARAMETERS_PROTECT;
 
+class BasenNumber : public number::Number, public Component {
+ public:
+  BasenNumber() = default;
+
+  explicit BasenNumber(bool initial_state);
+  virtual ~BasenNumber() = default;
+
+  void dump_config() override;
+  void loop() override {}
+  float get_setup_priority() const override { return setup_priority::DATA; }
+
+  void set_parent(BasenBMS *parent) { parent_ = parent; }
+  void set_type(uint8_t type) { type_ = type; }
+
+ protected:
+  void control(float value) override;
+
+  BasenBMS *parent_;
+  uint8_t type_{0};
+};
+
+class BasenButton : public button::Button, public Component {
+ public:
+  BasenButton() = default;
+
+  virtual ~BasenButton() = default;
+
+  void dump_config() override;
+  void loop() override {}
+  float get_setup_priority() const override { return setup_priority::DATA; }
+
+  void set_parent(BasenBMS *parent) { parent_ = parent; }
+  void set_type(uint8_t type, uint8_t data) { type_ = type; data_ = data; }
+
+ protected:
+  void press_action() override;
+
+  BasenBMS *parent_;
+  uint8_t type_{0};
+  uint8_t data_{0};
+};
+
+class BasenSwitch : public switch_::Switch, public Component {
+ public:
+  BasenSwitch() = default;
+
+  explicit BasenSwitch(bool initial_state);
+  virtual ~BasenSwitch() = default;
+
+  void dump_config() override;
+  void loop() override {}
+  float get_setup_priority() const override { return setup_priority::DATA; }
+
+  void set_parent(BasenBMS *parent) { parent_ = parent; }
+  void set_type(uint8_t type, uint8_t data_on, uint8_t data_off) { 
+    type_ = type;
+    data_[0] = data_on;
+    data_[1] = data_off;
+  }
+  void set_state_and_enable(bool state) {
+    this->publish_state(state);
+    this->allow_write_ = true;
+  }
+
+ protected:
+  void write_state(bool state) override;
+
+  BasenBMS *parent_;
+  uint8_t type_{0};
+  uint8_t data_[2]{0};
+  bool allow_write_{false};
+};
+
 class BasenBMS : public PollingComponent {
  public:
   void update();
   void dump_config() override;
+  void setup() override;
 
   void set_parent(BasenController *parent) { parent_ = parent; parent->register_bms(this); }
   void set_address(uint8_t address) { address_ = address; }
@@ -185,6 +290,15 @@ class BasenBMS : public PollingComponent {
   }
   void set_heating_status_binary_sensor(binary_sensor::BinarySensor *binary_sensor) {
     heating_status_binary_sensor_ = binary_sensor;
+  }
+  void set_heating_on_temperature_number(BasenNumber *number) {
+    heating_on_temperature_number_ = number;
+  }
+  void set_heating_off_temperature_number(BasenNumber *number) {
+    heating_off_temperature_number_ = number;
+  }
+  void set_heating_switch(BasenSwitch *sw) {
+    heating_switch_ = sw;
   }
 
   void set_voltage_sensor(sensor::Sensor *sensor) {
@@ -275,6 +389,9 @@ class BasenBMS : public PollingComponent {
 
  protected:
   friend BasenController;
+  friend BasenNumber;
+  friend BasenButton;
+  friend BasenSwitch;
   uint8_t address_{1};
   uint16_t timeout_count_{0};
 
@@ -288,9 +405,10 @@ class BasenBMS : public PollingComponent {
   uint8_t state_{0};
   uint32_t last_transmission_{0};
 
+  // TX command buffer
+  std::deque<BasenCommand> tx_buffer_;
+
   // Sensors
-  bool bms_version_received_{false};
-  bool barcode_received_{false};
   text_sensor::TextSensor *bms_version_text_sensor_{nullptr};
   text_sensor::TextSensor *barcode_text_sensor_{nullptr};
   binary_sensor::BinarySensor *connected_binary_sensor_{nullptr};
@@ -299,6 +417,9 @@ class BasenBMS : public PollingComponent {
   binary_sensor::BinarySensor *charging_enabled_binary_sensor_{nullptr};
   binary_sensor::BinarySensor *discharging_enabled_binary_sensor_{nullptr};
   binary_sensor::BinarySensor *heating_status_binary_sensor_{nullptr};
+  BasenNumber *heating_on_temperature_number_{nullptr};
+  BasenNumber *heating_off_temperature_number_{nullptr};
+  BasenSwitch *heating_switch_{nullptr};
 
   // Sensors for BMS data
   float voltage_{0.0f};
@@ -322,11 +443,15 @@ class BasenBMS : public PollingComponent {
   // Protect parameters
   uint16_t params_protect_[BASEN_BMS_PROTECT_PARAMETERS];  // Protect parameters
   uint16_t params_alarm_[BASEN_BMS_ALARM_PARAMETERS];      // Alarm parameters
-  uint8_t params_received_{0};  // Flags to check if parameters have been received
 
   void publish(void);
   void publish_status();
 
+  void add_startup_commands();
+  void queue_command(const uint16_t command);
+  void queue_data(const uint8_t command, std::vector<uint8_t> &data);
+
+  void handle_status (const uint16_t command, const uint8_t status_code);
   bool handle_data (const uint8_t *header, const uint8_t *data, uint8_t length);
   void handle_info(const uint8_t *data, uint8_t length);
   uint8_t handle_cell_voltages(const uint8_t *data, uint8_t length);
