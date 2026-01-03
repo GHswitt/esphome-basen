@@ -805,6 +805,48 @@ void BasenBMS::publish_status()
 }
 
 /**
+ * @brief Check max. temperature and disable heating if required
+ *
+ * This method checks the maximum temperature among the BMS temperature sensors.
+ * If the heating switch is enabled and the maximum temperature exceeds the configured
+ * heating_off_temperature_, the heating switch is turned off to prevent overheating.
+ * 
+ * When the heating was enabled manually, the BMS will not automatically disable it
+ * when heating_off_temperature_ is exceeded. This safety feature is only active when
+ * the heating switch is present and enabled.
+ * 
+ */
+void BasenBMS::check_max_temperature()
+{
+  if (this->heating_switch_ == nullptr)
+    return;
+
+  // Check if heating switch is enabled
+  if (!this->heating_switch_->state) {
+    return;
+  }
+
+  // Check if we have the max. temperature configured
+  if (this->heating_off_temperature_ <= -50.0f) {
+    // Set a default max. temperature
+    this->heating_off_temperature_ = 10.0f;
+  }
+
+  // Check max. temperature
+  float max_temp = -50.0f;
+  for (uint8_t i = 0; i < 4; i++) {
+    if (this->temperature_[i] > max_temp)
+      max_temp = this->temperature_[i];
+  }
+
+  // Disable heating if max. temperature exceeded
+  if (max_temp >= heating_off_temperature_) {
+    ESP_LOGW(TAG, "Heating off temperature %.1f °C exceeded (%.1f °C), disabling heating", heating_off_temperature_, max_temp);
+    this->heating_switch_->turn_off();
+  }
+}
+
+/**
  * @brief Publishes sensor data in blocks to reduce loop time.
  *
  * This method checks if the current state is BMS_STATE_PUBLISH. If so, it publishes
@@ -887,6 +929,7 @@ void BasenBMS::publish()
       if (temperature_sensor_[5])
         temperature_sensor_[5]->publish_state(this->temperature_ambient_);
       publish_status();
+      check_max_temperature();
       this->publish_count_++;
       break;
     default:
@@ -1106,6 +1149,13 @@ void BasenBMS::handle_status (const uint16_t command, const uint8_t status_code)
     case COMMAND_HEATING_OFF_TEMPERATURE_WRITE:
       if (status_code == 0x00) {
         ESP_LOGD(TAG, "Heating temperature command successful for address %02X", this->address_);
+
+        // Update heating off temperature value
+        if (((command & 0xFF) == COMMAND_HEATING_OFF_TEMPERATURE_WRITE) &&
+            (this->heating_off_temperature_number_ != nullptr)) {
+          this->heating_off_temperature_ = this->heating_off_temperature_number_->state;
+          ESP_LOGD(TAG, "Updated heating off temperature to %.1f °C for address %02X", this->heating_off_temperature_, this->address_);
+        }
       } else {
         ESP_LOGW(TAG, "Heating temperature command failed with status %02X for address %02X", status_code, this->address_);
         // Read back the current temperature
@@ -1187,9 +1237,12 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
     case COMMAND_HEATING_OFF_TEMPERATURE:
       if (length < 4) {
         ESP_LOGW(TAG, "Invalid length for COMMAND_HEATING_OFF_TEMPERATURE: %d", length);
-      } else if (this->heating_off_temperature_number_) {
-        ESP_LOGV(TAG, "Heating off temperature: %d", (data[2] << 8) | data[3]);
-        this->heating_off_temperature_number_->publish_state(((data[2] << 8) | data[3]) - 50.0f);
+      } else {
+        this->heating_off_temperature_ = ((data[2] << 8) | data[3]) - 50.0f;
+        ESP_LOGV(TAG, "Heating off temperature: %f", heating_off_temperature_);
+        if (this->heating_off_temperature_number_) {
+          this->heating_off_temperature_number_->publish_state(heating_off_temperature_);
+        }
       }
       break;
     case COMMAND_INFO:
