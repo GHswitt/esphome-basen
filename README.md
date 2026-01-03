@@ -258,14 +258,34 @@ Additionally the following protection parameters are read (one time during start
 
 ## Control options
 
-The temperature limits for enabling/disabling the heating output can be configured with a `number`.
+The BMS temperature limits for enabling/disabling the heating output can be configured with a `number`.
 
-- Heating on temperature
-- Heating off temperature
+- heating_on_temperature
+- heating_off_temperature
 
-Additionaly the state of the heating output can be controlled by a `switch`.
+```yaml
+number:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    heating_on_temperature:
+      name: "${name} Heating On Temperature"
+    heating_off_temperature:
+      name: "${name} Heating Off Temperature"
+```
 
-- Heating
+These values are used by the BMS to enable/disable the heating output automatically.
+
+Additionaly the state of the heating output can manually be controlled by a `switch`.
+
+- heating
+
+```yaml
+switch:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    heating:
+      name: "${name} Heating"
+```
 
 ## BMS Serial Protocol Description
 

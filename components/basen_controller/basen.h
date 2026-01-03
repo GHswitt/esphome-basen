@@ -435,10 +435,11 @@ class BasenBMS : public PollingComponent {
   float cell_max_voltage_{0.0f};
   uint8_t cell_min_index_{0};
   uint8_t cell_max_index_{0};
-  int8_t temperature_[4]{0, 0, 0, 0}; // Temperature sensors (4 sensors)
-  int8_t temperature_mos_{0};         // MOSFET temperature
-  int8_t temperature_ambient_{0};     // Ambient temperature
-  uint8_t status_bitmask_[10]{0};     // Status bitmask for BMS
+  int8_t temperature_[4]{0, 0, 0, 0};       // Temperature sensors (4 sensors)
+  int8_t temperature_mos_{0};               // MOSFET temperature
+  int8_t temperature_ambient_{0};           // Ambient temperature
+  uint8_t status_bitmask_[10]{0};           // Status bitmask for BMS
+  float heating_off_temperature_{-100.0f};  // Heating off temperature
 
   // Protect parameters
   uint16_t params_protect_[BASEN_BMS_PROTECT_PARAMETERS];  // Protect parameters
@@ -446,6 +447,7 @@ class BasenBMS : public PollingComponent {
 
   void publish(void);
   void publish_status();
+  void check_max_temperature();
 
   void add_startup_commands();
   void queue_command(const uint16_t command);

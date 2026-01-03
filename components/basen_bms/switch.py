@@ -2,7 +2,7 @@ import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import switch
 from esphome.const import (
-    CONF_ID, ENTITY_CATEGORY_CONFIG, ICON_EMPTY, CONF_ICON
+    CONF_ID, ICON_EMPTY, CONF_ICON
 )
 
 from . import CONF_BASEN_BMS_ID, BasenBMS, basen_ns
