@@ -660,6 +660,15 @@ void BasenController::loop() {
       default:
         // Device is idle, nothing to do
         break;
+      case BasenBMS::BMS_STATE_DISABLED:
+        // Device is disabled, check if it should be enabled
+        if (device->enable_switch_) {
+          if (device->enable_switch_->state) {
+            device->state_ = BasenBMS::BMS_STATE_WANT_UPDATE;
+            ESP_LOGI(TAG, "Enabling device with address %02X", device->address_);
+          }
+        }
+        break;
       case BasenBMS::BMS_STATE_WANT_UPDATE:
         // Update this device
         queue_device(device);
@@ -705,9 +714,9 @@ void BasenBMS::setup() {
 void BasenBMS::update()
 {
   if (this->state_ == BMS_STATE_IDLE) {
-    this->state_ = BMS_STATE_WANT_UPDATE;  // Set update flag
+      this->state_ = BMS_STATE_WANT_UPDATE;  // Set update flag
+    }
   }
-}
 
 /**
  * @brief Publishes the current status of the Basen BMS.
@@ -936,6 +945,20 @@ void BasenBMS::publish()
     default:
       this->publish_count_ = 0;
       this->state_ = BMS_STATE_DONE;
+
+      // Check if disabled
+      if (this->enable_switch_) {
+        if (!this->enable_switch_->state) {
+          this->set_connected(false);
+          this->tx_buffer_.clear();
+          // Retrieve version, barcode, parameters again when enabled
+          this->add_startup_commands();
+
+          this->state_ = BMS_STATE_DISABLED;
+
+          ESP_LOGI(TAG, "Device %02X disabled", this->address_);
+        }
+      }
       break;
   }
 }
@@ -1491,9 +1514,16 @@ void BasenSwitch::write_state(bool state) {
     return;
   }
 
-  if (this->type_ != COMMAND_HEATING_SET) {
-    ESP_LOGE(TAG, "Parameter type is unsupported: %d", this->type_);
-    return;
+  switch (this->type_) {
+    case 0x00:
+      this->publish_state(state);
+      ESP_LOGD(TAG, "Set BMS 0x%02X enable to %s", this->parent_->address_, state ? "true" : "false");
+      return;
+    case COMMAND_HEATING_SET:
+      break;
+    default:
+      ESP_LOGE(TAG, "Parameter type is unsupported: %d", this->type_);
+      return;
   }
 
   this->publish_state(state);
