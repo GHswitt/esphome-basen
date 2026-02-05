@@ -1,8 +1,9 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import switch
+from esphome.components.switch import RESTORE_MODES
 from esphome.const import (
-    CONF_ID, ICON_EMPTY, CONF_ICON
+    CONF_ID, ICON_EMPTY, CONF_ICON, CONF_RESTORE_MODE
 )
 
 from . import CONF_BASEN_BMS_ID, BasenBMS, basen_ns
@@ -11,9 +12,11 @@ DEPENDENCIES = ["basen_bms"]
 
 CODEOWNERS = ["GHswitt"]
 
+CONF_ENABLE = "enable"
 CONF_HEATING = "heating"
 
 SWITCHES = {
+    CONF_ENABLE      : [0x00, 0x00, 0x00],
     CONF_HEATING     : [0xE3, 0x01, 0x02],
 }
 
@@ -31,6 +34,14 @@ BASEN_BUTTON_SCHEMA = (
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_BASEN_BMS_ID): cv.use_id(BasenBMS),
+        cv.Optional(CONF_ENABLE): BASEN_BUTTON_SCHEMA.extend(
+            {
+                cv.Optional(CONF_ICON, default="mdi:connection"): cv.icon,
+                cv.Optional(CONF_RESTORE_MODE, default="ALWAYS_ON"): cv.enum(
+                    RESTORE_MODES, upper=True, space="_"
+                ),
+            }
+        ),
         cv.Optional(CONF_HEATING): BASEN_BUTTON_SCHEMA.extend(
             {
                 cv.Optional(CONF_ICON, default="mdi:radiator"): cv.icon,

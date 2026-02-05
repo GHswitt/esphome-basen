@@ -261,6 +261,18 @@ Additionally the following protection parameters are read (one time during start
 
 ## Control options
 
+BMS communication can be enabled/disabled by adding a `switch`:
+
+- enable
+
+```yaml
+switch:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    enable:
+      name: "${name} Enable communication"
+```
+
 The BMS temperature limits for enabling/disabling the heating output can be configured with a `number`.
 
 - heating_on_temperature

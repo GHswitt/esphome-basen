@@ -300,6 +300,11 @@ class BasenBMS : public PollingComponent {
   void set_heating_switch(BasenSwitch *sw) {
     heating_switch_ = sw;
   }
+  void set_enable_switch(BasenSwitch *sw) {
+    enable_switch_ = sw;
+    // ALWAYS_ON
+    enable_switch_->publish_state(true);
+  }
 
   void set_voltage_sensor(sensor::Sensor *sensor) {
     voltage_sensor_ = sensor;
@@ -400,7 +405,8 @@ class BasenBMS : public PollingComponent {
     BMS_STATE_WANT_UPDATE,
     BMS_STATE_UPDATING,
     BMS_STATE_PUBLISH,
-    BMS_STATE_DONE
+    BMS_STATE_DONE,
+    BMS_STATE_DISABLED
   };
   uint8_t state_{0};
   uint32_t last_transmission_{0};
@@ -420,6 +426,7 @@ class BasenBMS : public PollingComponent {
   BasenNumber *heating_on_temperature_number_{nullptr};
   BasenNumber *heating_off_temperature_number_{nullptr};
   BasenSwitch *heating_switch_{nullptr};
+  BasenSwitch *enable_switch_{nullptr};
 
   // Sensors for BMS data
   float voltage_{0.0f};
@@ -459,7 +466,17 @@ class BasenBMS : public PollingComponent {
   uint8_t handle_cell_voltages(const uint8_t *data, uint8_t length);
 
   void handle_parameters (const uint8_t *data, const uint8_t length, uint16_t *params, uint8_t params_count, PARAM_OPERATION *ops, sensor::Sensor **sensors);
-  
+
+  bool is_enabled() {
+    if (this->enable_switch_ == nullptr)
+      return true;
+    return this->enable_switch_->state;
+  }
+
+  void disable();
+  void enable();
+  void timeout();
+
   void set_connected (bool connected) {
     if (this->connected_binary_sensor_ == nullptr)
       return;
