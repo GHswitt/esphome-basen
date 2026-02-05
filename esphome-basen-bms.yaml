@@ -96,6 +96,8 @@ wifi:
   domain: !secret domain
   ap:
 
+captive_portal:
+
 ota:
   platform: esphome
 
@@ -121,7 +123,7 @@ api:
 basen_controller:
   - uart_id: uart_esp_1
     id: basen1
-    throttle: 5s
+    throttle: 3s
     #flow_control_pin: 17
 
 packages:

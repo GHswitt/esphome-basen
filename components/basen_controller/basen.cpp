@@ -403,7 +403,8 @@ void BasenController::update_device ()
     return;
   }
 
-  if ((now-current_->last_transmission_) > 1000) {
+  // Throttle commands to the device
+  if ((now-current_->last_transmission_) > this->throttle_) {
     if (current_->tx_buffer_.empty()) {
       // Should not come here with empty queue
       current_->queue_command (COMMAND_INFO);
