@@ -485,7 +485,7 @@ void BasenController::uart_loop() {
   int available_bytes = available();
   if (available_bytes) {
     // Check if we have enough space in the frame buffer
-    if (this->frame_size_ + available_bytes > sizeof(this->frame_)) {
+    if (this->frame_size_ + available_bytes >= sizeof(this->frame_)) {
       ESP_LOGW(TAG, "Frame buffer overflow, clearing RX buffer");
       set_state (STATE_BUS_CHECK);
       return;
@@ -551,7 +551,7 @@ void BasenController::uart_loop() {
     // 04H CID2 Invalid
     // 05H Command Format Error
     // 06H Invalid data
-    current_->handle_status ((frame_[1] | (uint16_t)frame_[2] << 8), frame_[4]);
+    current_->handle_status ((frame_[2] | (uint16_t)frame_[3] << 8), frame_[4]);
 
     // 00 = success
     if (frame_[4] == 0x00) {
@@ -852,7 +852,7 @@ void BasenBMS::check_max_temperature()
 
   // Disable heating if max. temperature exceeded
   if (max_temp >= heating_off_temperature_) {
-    ESP_LOGW(TAG, "Heating off temperature %.1f °C exceeded (%.1f °C), disabling heating", heating_off_temperature_, max_temp);
+    ESP_LOGW(TAG, "Heating off temperature %.1f °C exceeded (%.1f °C) for address %02X, disabling heating", heating_off_temperature_, max_temp, this->address_);
     this->heating_switch_->turn_off();
   }
 }
@@ -1114,6 +1114,10 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
         // Create a string containing all bytes
         if (!count || (count > 5))
           break;
+        if ((count * size) > sizeof(this->status_bitmask_)) {
+          ESP_LOGW(TAG, "Status bitmask count too large: %d", count);
+          break;
+        }
         memcpy (this->status_bitmask_, position + 2, count * size);
         break;
       case 0x07:  // Cycles
@@ -1434,11 +1438,11 @@ void BasenBMS::handle_parameters (const uint8_t *data, const uint8_t length, uin
   }
 
   uint8_t position = 0;
-  while (position < length) {
+  while ((position + 1) < length) {
     uint8_t type = data[position++];
     uint8_t size = data[position++];
 
-    if (size != 2) {
+    if ((size != 2) || ((position + size) > length)) {
       ESP_LOGW(TAG, "Unsupported size for type %02X: %d", type, size);
       return;
     }
