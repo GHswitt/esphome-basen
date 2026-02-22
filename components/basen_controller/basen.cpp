@@ -37,7 +37,7 @@ static struct {
   {0, 0x08, 2, 0x0004, "Cell voltage low fault"},
   {0, 0x10, 2, 0x0200, "Voltage line break"},
   {0, 0x20, 2, 0x0801, "Charge MOS fault"},
-  {0, 0x40, 2, 0x0801, "Dischare MOS fault"},
+  {0, 0x40, 2, 0x0801, "Discharge MOS fault"},
   {0, 0x80, 2, 0x0800, "Voltage sensor fault"},
   {1, 0x01, 2, 0x0800, "NTC disconnection"},
   {1, 0x02, 2, 0x0800, "ADC MOD fault"},
@@ -255,7 +255,7 @@ bool BasenController::empty_rx (void) {
   uint8_t data;
   uint8_t count = 255;
   bool result = false;
-  while (available() && --count) {
+  while (available() && count--) {
     read_byte(&data);
     //ESP_LOGD(TAG, "Emptying RX buffer: %02X", data);
     result = true;
@@ -1060,13 +1060,26 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
     if (type > 0x0A)
         size = 4;
 
+    // Calculate total size of this data block
+    uint16_t data_size = count * size + 2;  // 2 bytes for type and count
+    if (length < data_size) {
+      ESP_LOGW(TAG, "Not enough data for type %02X with count %u", type, count);
+      break;
+    }
+
     // Get first data element
     uint16_t data16 = 0;
     if (count && length >= 4) {
       data16 = (position[2] << 8) | position[3];
+    } else {
+      ESP_LOGW(TAG, "No data for type %02X", type);
+      // Advance to next data type
+      length -= data_size;
+      position += data_size;
+      continue;
     }
   
-    switch (position[0]) {
+    switch (type) {
       case 0x02:  // Current
         this->current_ = (data16 / -100.0f) + 300;  // Convert to A
         break;
@@ -1082,12 +1095,12 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
           break;
         }
         for (uint8_t i = 0; i < count; i++) {
-          uint8_t type = position[2 + 2*i];  // Type of temperature sensor
+          uint8_t temperature_type = position[2 + 2*i];  // Type of temperature sensor
           int8_t value = position[2 + 2*i + 1] - 50;  // Value of temperature sensor
-          if (type == 0x40) {
+          if (temperature_type == 0x40) {
             // MOS temperature
             this->temperature_mos_ = value;
-          } else if (type == 0x20) {
+          } else if (temperature_type == 0x20) {
             // Ambient temperature
             this->temperature_ambient_ = value;
           } else {
@@ -1118,12 +1131,6 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
     }
 
     // Advance to next data type
-    uint16_t data_size = count * size + 2;  // 2 bytes for type and count
-    if (length < data_size) {
-      ESP_LOGW(TAG, "Not enough data for type %02X with count %d", type, count);
-      break;
-    }
-
     length -= data_size;
     position += data_size;
   }
@@ -1499,7 +1506,7 @@ void BasenNumber::control(float value) {
   }
 
   // Convert temperature value
-  uint16_t int_value = static_cast<uint16_t>(value);
+  int16_t int_value = static_cast<int16_t>(value);
 
   this->publish_state(int_value);
 
@@ -1540,7 +1547,7 @@ void BasenButton::press_action() {
 }
 
 BasenSwitch::BasenSwitch(bool initial_state) {
-  this->write_state(initial_state);
+  this->publish_state(initial_state);
 }
 
 void BasenSwitch::dump_config() {

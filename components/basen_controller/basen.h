@@ -177,7 +177,6 @@ class BasenNumber : public number::Number, public Component {
  public:
   BasenNumber() = default;
 
-  explicit BasenNumber(bool initial_state);
   virtual ~BasenNumber() = default;
 
   void dump_config() override;
