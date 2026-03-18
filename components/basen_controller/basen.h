@@ -28,11 +28,17 @@ constexpr uint8_t  COMMAND_BMS_VERSION                    = 0x33;
 constexpr uint8_t  COMMAND_BARCODE                        = 0x42;
 constexpr uint16_t COMMAND_PARAMETERS                     = 0xE043;
 constexpr uint16_t COMMAND_ALARM_PARAMETERS               = 0x43;
-constexpr uint8_t  COMMAND_HEATING_ON_TEMPERATURE         = 0x00F1;
-constexpr uint8_t  COMMAND_HEATING_ON_TEMPERATURE_WRITE   = 0x00F2;
-constexpr uint8_t  COMMAND_HEATING_OFF_TEMPERATURE        = 0x00F3;
-constexpr uint8_t  COMMAND_HEATING_OFF_TEMPERATURE_WRITE  = 0x00F4;
+constexpr uint8_t  COMMAND_GET_BMS_TIME                   = 0x45;
+constexpr uint8_t  COMMAND_HEATING_ON_TEMPERATURE         = 0xF1;
+constexpr uint8_t  COMMAND_HEATING_ON_TEMPERATURE_WRITE   = 0xF2;
+constexpr uint8_t  COMMAND_HEATING_OFF_TEMPERATURE        = 0xF3;
+constexpr uint8_t  COMMAND_HEATING_OFF_TEMPERATURE_WRITE  = 0xF4;
 constexpr uint8_t  COMMAND_HEATING_SET                    = 0xE3;
+constexpr uint8_t  COMMAND_CONTROL_MOSFET                 = 0xD3;
+constexpr uint8_t    COMMAND_CONTROL_MOSFET_CHARGE_ON     = 0x01;
+constexpr uint8_t    COMMAND_CONTROL_MOSFET_CHARGE_OFF    = 0x02;
+constexpr uint8_t    COMMAND_CONTROL_MOSFET_DISCHARGE_ON  = 0x03;
+constexpr uint8_t    COMMAND_CONTROL_MOSFET_DISCHARGE_OFF = 0x04;
 
 // Number of parameters
 #define BASEN_BMS_PROTECT_PARAMETERS  0x33
@@ -304,6 +310,12 @@ class BasenBMS : public PollingComponent {
     // ALWAYS_ON
     enable_switch_->publish_state(true);
   }
+  void set_charge_switch(BasenSwitch *sw) {
+    charge_switch_ = sw;
+  }
+  void set_discharge_switch(BasenSwitch *sw) {
+    discharge_switch_ = sw;
+  }
 
   void set_voltage_sensor(sensor::Sensor *sensor) {
     voltage_sensor_ = sensor;
@@ -426,6 +438,8 @@ class BasenBMS : public PollingComponent {
   BasenNumber *heating_off_temperature_number_{nullptr};
   BasenSwitch *heating_switch_{nullptr};
   BasenSwitch *enable_switch_{nullptr};
+  BasenSwitch *charge_switch_{nullptr};
+  BasenSwitch *discharge_switch_{nullptr};
 
   // Sensors for BMS data
   float voltage_{0.0f};

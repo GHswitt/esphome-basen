@@ -14,10 +14,14 @@ CODEOWNERS = ["GHswitt"]
 
 CONF_ENABLE = "enable"
 CONF_HEATING = "heating"
+CONF_CHARGE = "charge"
+CONF_DISCHARGE = "discharge"
 
 SWITCHES = {
     CONF_ENABLE      : [0x00, 0x00, 0x00],
     CONF_HEATING     : [0xE3, 0x01, 0x02],
+    CONF_CHARGE      : [0xD3, 0x01, 0x02],
+    CONF_DISCHARGE   : [0xD3, 0x03, 0x04],
 }
 
 BasenSwitch = basen_ns.class_("BasenSwitch", switch.Switch, cg.Component)
@@ -45,6 +49,16 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_HEATING): BASEN_BUTTON_SCHEMA.extend(
             {
                 cv.Optional(CONF_ICON, default="mdi:radiator"): cv.icon,
+            }
+        ),
+        cv.Optional(CONF_CHARGE): BASEN_BUTTON_SCHEMA.extend(
+            {
+                cv.Optional(CONF_ICON, default="mdi:electric-switch"): cv.icon,
+            }
+        ),
+        cv.Optional(CONF_DISCHARGE): BASEN_BUTTON_SCHEMA.extend(
+            {
+                cv.Optional(CONF_ICON, default="mdi:electric-switch"): cv.icon,
             }
         ),
     }

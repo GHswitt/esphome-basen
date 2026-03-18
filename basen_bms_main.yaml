@@ -112,3 +112,20 @@ text_sensor:
    status:
      name: "${name} Status"
  
+switch:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    enable:
+      name: "${name} Enable communication"
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    heating:
+      name: "${name} Heating"
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    charge:
+      name: "${name} Charge"
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    discharge:
+      name: "${name} Discharge"

@@ -98,7 +98,7 @@ The following status messages can be decoded, though many have not been tested d
 - Cell voltage low fault
 - Voltage line break
 - Charge MOS fault
-- Dischare MOS fault
+- Discharge MOS fault
 - Voltage sensor fault
 - NTC disconnection
 - ADC MOD fault
@@ -261,9 +261,16 @@ Additionally the following protection parameters are read (one time during start
 
 ## Control options
 
-BMS communication can be enabled/disabled by adding a `switch`:
+### Switches
 
-- enable
+The following switches are available:
+
+| Switch       | Description                                                                 |
+|--------------|-----------------------------------------------------------------------------|
+| `enable`     | Enable/disable BMS communication                                            |
+| `heating`    | Manually control the heating output                                         |
+| `charge`     | Connect/disconnect charge MOSFET (**avoid switching under load**)           |
+| `discharge`  | Connect/disconnect discharge MOSFET (**avoid switching under load**)        |
 
 ```yaml
 switch:
@@ -271,12 +278,17 @@ switch:
     basen_bms_id: ${basen_bms_id}
     enable:
       name: "${name} Enable communication"
+    heating:
+      name: "${name} Heating"
+    charge:
+      name: "${name} Charge"
+    discharge:
+      name: "${name} Discharge"
 ```
 
-The BMS temperature limits for enabling/disabling the heating output can be configured with a `number`.
+### Heating temperature thresholds
 
-- heating_on_temperature
-- heating_off_temperature
+The BMS temperature limits for enabling/disabling the heating output can be configured with a `number`. These values are used by the BMS to enable/disable the heating output automatically.
 
 ```yaml
 number:
@@ -286,20 +298,6 @@ number:
       name: "${name} Heating On Temperature"
     heating_off_temperature:
       name: "${name} Heating Off Temperature"
-```
-
-These values are used by the BMS to enable/disable the heating output automatically.
-
-Additionaly the state of the heating output can manually be controlled by a `switch`.
-
-- heating
-
-```yaml
-switch:
-  - platform: basen_bms
-    basen_bms_id: ${basen_bms_id}
-    heating:
-      name: "${name} Heating"
 ```
 
 ## BMS Serial Protocol Description
@@ -330,13 +328,61 @@ Each frame (command or response) consists of the following bytes:
 
 ### Command Codes
 
-- `0x01`: Info (cell voltages, SoC, SoH, etc.)
-- `0x33`: BMS Version
-- `0x42`: Barcode
-- `0x43 0xE0`: Protection parameters
-- `0xF1/0xF2`: Heating on temperature
-- `0xF3/0xF4`: Heating off temperature
-- `0xE3`: Heating control
+*Not all of them are implemented or tested!*
+
+
+| Cmd    | Packet   | Sent data                               | Description                                           | Response data                              |
+|--------|----------|-----------------------------------------|-------------------------------------------------------|--------------------------------------------|
+| `0x01` | 6 bytes  | —                                       | Information                                           | Cell voltages, SoC, SoH, ...               |
+| `0x33` | 6 bytes  | —                                       | Read BMS version / product model                      | `[len][ASCII string...]`                   |
+| `0x39` | 8 bytes  | `[02][00][00]`                          | Read short-circuit protection count                   | `[..][B4][B5][B6][B7]` → 32-bit count      |
+| `0x3A` | 8 bytes  | `[02][00][00]`                          | Read temperature protection count                     | `[..][B4][B5][B6][B7]` → 32-bit count      |
+| `0x3B` | 8 bytes  | `[02][00][00]`                          | Read overcurrent protection count                     | `[..][B4][B5][B6][B7]` → 32-bit count      |
+| `0x3C` | 8 bytes  | `[02][00][00]`                          | Read overvoltage protection count                     | `[..][B4][B5][B6][B7]` → 32-bit count      |
+| `0x3D` | 8 bytes  | `[02][00][00]`                          | Read undervoltage protection count                    | `[..][B4][B5][B6][B7]` → 32-bit count      |
+| `0x42` | 6 bytes  | —                                       | Read PCB barcode string                               | `[len][ASCII string...]`                   |
+| `0x43` | 6 bytes  | `[E0]`                                  | Read protection parameters                            | 210 bytes: records of `[id][pad][Hi][Lo]` per parameter |
+| `0x43` | 6 bytes  | `[00]`                                  | Read alarm parameters                                 | records of `[id][pad][Hi][Lo]` per parameter            |
+| `0x45` | 6 bytes  | —                                       | Read BMS system time                                  | `[06][YY][MM][DD][HH][mm][SS]`             |
+| `0x84` | 8 bytes  | `[02][Hi][Lo]`                          | Charge calibration point 1 (voltage)                  | ACK                                        |
+| `0x84` | 8 bytes  | `[02][FF][FF]`                          | Reset charge calibration point 1                      | ACK                                        |
+| `0x85` | 8 bytes  | `[02][Hi][Lo]`                          | Charge calibration point 2 (voltage)                  | ACK                                        |
+| `0x86` | 8 bytes  | `[02][Hi][Lo]`                          | Discharge calibration point 1 (voltage)               | ACK                                        |
+| `0x87` | 8 bytes  | `[02][Hi][Lo]`                          | Discharge calibration point 2 (voltage)               | ACK                                        |
+| `0x92` | 8 bytes  | `[02][02][n]`                           | Set cell string count (no ACK, requires reset)        | None                                       |
+| `0x93` | 8 bytes  | `[02][Hi][Lo]`                          | Write loop/cycle count                                | ACK                                        |
+| `0x95` | 8 bytes  | `[02][Hi][Lo]`                          | Write short-circuit protection count                  | ACK                                        |
+| `0x96` | 8 bytes  | `[02][Hi][Lo]`                          | Write temperature protection count                    | ACK                                        |
+| `0x97` | 8 bytes  | `[02][Hi][Lo]`                          | Write overcurrent protection count                    | ACK                                        |
+| `0x98` | 8 bytes  | `[02][Hi][Lo]`                          | Write overvoltage protection count                    | ACK                                        |
+| `0x99` | 8 bytes  | `[02][Hi][Lo]`                          | Write undervoltage protection count                   | ACK                                        |
+| `0xC9` | 8 bytes  | `[02][Hi][Lo]`                          | Write full (design) capacity                          | ACK                                        |
+| `0xCA` | 8 bytes  | `[02][Hi][Lo]`                          | Write remaining (surplus) capacity                    | ACK                                        |
+| `0xCD` | 8 bytes  | `[02][00][01]`                          | Force sleep mode                                      | ACK                                        |
+| `0xCF` | 12 bytes | `[06][YY][MM][DD][HH][mm][SS]`          | Write system time                                     | ACK                                        |
+| `0xD0` | 7 bytes  | `[01][07]`                              | Read start time                                       | `[..][YY][MM][DD][HH][mm][SS]`             |
+| `0xD0` | 7 bytes  | `[01][08]`                              | Read end time                                         | `[..][YY][MM][DD][HH][mm][SS]`             |
+| `0xD0` | 7 bytes  | `[01][09]`                              | Read interval time                                    | `[..][Hi][Lo]`                             |
+| `0xD0` | 13 bytes | `[07][04][YY][MM][DD][HH][mm][SS]`      | Write start time                                      | ACK                                        |
+| `0xD0` | 13 bytes | `[07][05][YY][MM][DD][HH][mm][SS]`      | Write end time                                        | ACK                                        |
+| `0xD1` | 8 bytes  | `[02][01][01]`                          | Enable buzzer                                         | ACK                                        |
+| `0xD1` | 8 bytes  | `[02][01][00]`                          | Disable buzzer                                        | ACK                                        |
+| `0xD3` | 7 bytes  | `[01][01]`                              | Connect charge MOS                                    | ACK                                        |
+| `0xD3` | 7 bytes  | `[01][02]`                              | Disconnect charge MOS                                 | ACK                                        |
+| `0xD3` | 7 bytes  | `[01][03]`                              | Connect discharge MOS                                 | ACK                                        |
+| `0xD3` | 7 bytes  | `[01][04]`                              | Disconnect discharge MOS                              | ACK                                        |
+| `0xDB` | 9 bytes  | `[03][13][Hi][Lo]`                      | Write nominal capacity                                | ACK                                        |
+| `0xDC` | 7 bytes  | `[01][06]`                              | Read serial number                                    | `[len][ASCII string...]`                   |
+| `0xE2` | 7 bytes  | `[01][01]`                              | Enable fan                                            | ACK                                        |
+| `0xE2` | 7 bytes  | `[01][02]`                              | Disable fan                                           | ACK                                        |
+| `0xE3` | 7 bytes  | `[01][01]`                              | Enable heater                                         | ACK                                        |
+| `0xE3` | 7 bytes  | `[01][02]`                              | Disable heater                                        | ACK                                        |
+| `0xF1` | 6 bytes  | —                                       | Read heater ON temperature                            | `[..][Hi][Lo]` at [6][7], value − 50 = °C |
+| `0xF2` | 8 bytes  | `[02][Hi][Lo]`                          | Set heater ON temperature (wire value = °C + 50)      | ACK + `buffer[4]==0x00`                    |
+| `0xF3` | 6 bytes  | —                                       | Read heater OFF temperature                           | `[..][Hi][Lo]` at [6][7], value − 50 = °C |
+| `0xF4` | 8 bytes  | `[02][Hi][Lo]`                          | Set heater OFF temperature (wire value = °C + 50)     | ACK + `buffer[4]==0x00`                    |
+
+
 
 ### Example Command Frame
 

@@ -62,10 +62,10 @@ static struct {
   {4, 0x01, 2, 0x0010, "Ambient_Low_TEMP_Protection"},
   {4, 0x02, 2, 0x0008, "ENV_High_TEMP_Protection"},
   {4, 0x10, 2, 0x0001, "SOC Low protect"},
-  {5, 0x01, 0, 0x0001, "Manual_CHG_MOS_Open"},
-  {5, 0x02, 0, 0x0001, "Manual_CHG_MOS_Off"},
-  {5, 0x04, 0, 0x0001, "Manual_DISC_MOS_Open"},
-  {5, 0x08, 0, 0x0001, "Manual_DISC_MOS_Off"},
+  {5, 0x01, 0, 0x0000, "Manual_CHG_MOS_Open"},
+  {5, 0x02, 0, 0x0000, "Manual_CHG_MOS_Off"},
+  {5, 0x04, 0, 0x0000, "Manual_DISC_MOS_Open"},
+  {5, 0x08, 0, 0x0000, "Manual_DISC_MOS_Off"},
   {5, 0x10, 0, 0x0000, "Heating pad"},
   {5, 0x20, 2, 0x0008, "MOSFET_OV_TEMP_Protection"},
   {5, 0x40, 2, 0x0010, "MOSFET_LO_TEMP_Protection"},
@@ -523,6 +523,7 @@ void BasenController::uart_loop() {
         set_state (STATE_BUS_CHECK);
       }
 
+      // Wait for header from BMS
       return;
     }
 
@@ -634,11 +635,16 @@ void BasenController::queue_device(BasenBMS *device) {
  * - Calls the UART loop handler at the end of each cycle.
  */
 void BasenController::loop() {
-  if (millis() >= 1000*10)
+  if (!enable_ && millis() >= 1000*10) {
     enable_ = true;  // Enable after 10 seconds
+    for (auto &device : this->devices_) {
+      device->add_startup_commands();
+    }
+  }
 
   // Check if enabled
   if (!enable_) {
+#if 0
     if (current_ != NULL) {
       // Reset current device
       current_->state_= BasenBMS::BMS_STATE_IDLE;
@@ -648,11 +654,10 @@ void BasenController::loop() {
     for (auto &device : this->devices_) {
       device->set_connected(false);
       device->tx_buffer_.clear();
-      // Retrieve version, barcode, parameters again when enabled
-      device->add_startup_commands();
     }
 
     set_state (STATE_BUS_CHECK);
+#endif
     return;
   }
 
@@ -701,8 +706,6 @@ void BasenController::loop() {
  * that will be executed when the device is set up.
  */
 void BasenBMS::setup() {
-  // Add startup commands
-  this->add_startup_commands();
 }
 
 /**
@@ -783,9 +786,17 @@ void BasenBMS::publish_status()
     // Check if charge MosFET is off: Byte 2, Bit 4 (0x10)
     this->charging_enabled_binary_sensor_->publish_state(!(this->status_bitmask_[2] & 0x10));
   }
+  // Charge switch
+  if (this->charge_switch_) {
+     this->charge_switch_->set_state_and_enable (!(this->status_bitmask_[2] & 0x10));
+  }
   if (this->discharging_enabled_binary_sensor_) {
     // Check if discharge MosFET is off: Byte 2, Bit 5 (0x20)
     this->discharging_enabled_binary_sensor_->publish_state(!(this->status_bitmask_[2] & 0x20));
+  }
+  // Discharge switch
+  if (this->discharge_switch_) {
+     this->discharge_switch_->set_state_and_enable (!(this->status_bitmask_[2] & 0x20));
   }
   if (this->heating_status_binary_sensor_) {
     // Check if heating MosFET is on: Byte 5, Bit 4 (0x10)
@@ -1199,6 +1210,7 @@ void BasenBMS::add_startup_commands() {
   this->queue_command(COMMAND_ALARM_PARAMETERS);
   this->queue_command(COMMAND_HEATING_ON_TEMPERATURE);
   this->queue_command(COMMAND_HEATING_OFF_TEMPERATURE);
+  this->queue_command(COMMAND_GET_BMS_TIME);
   this->queue_command(COMMAND_INFO);
 }
 
@@ -1222,13 +1234,13 @@ void BasenBMS::handle_status (const uint16_t command, const uint8_t status_code)
     case COMMAND_HEATING_ON_TEMPERATURE_WRITE:
     case COMMAND_HEATING_OFF_TEMPERATURE_WRITE:
       if (status_code == 0x00) {
-        ESP_LOGD(TAG, "Heating temperature command successful for address %02X", this->address_);
+        ESP_LOGI(TAG, "Heating temperature command successful for address %02X", this->address_);
 
         // Update heating off temperature value
         if (((command & 0xFF) == COMMAND_HEATING_OFF_TEMPERATURE_WRITE) &&
             (this->heating_off_temperature_number_ != nullptr)) {
           this->heating_off_temperature_ = this->heating_off_temperature_number_->state;
-          ESP_LOGD(TAG, "Updated heating off temperature to %.1f °C for address %02X", this->heating_off_temperature_, this->address_);
+          ESP_LOGI(TAG, "Updated heating off temperature to %.1f °C for address %02X", this->heating_off_temperature_, this->address_);
         }
       } else {
         ESP_LOGW(TAG, "Heating temperature command failed with status %02X for address %02X", status_code, this->address_);
@@ -1242,9 +1254,16 @@ void BasenBMS::handle_status (const uint16_t command, const uint8_t status_code)
       break;
     case COMMAND_HEATING_SET:
       if (status_code == 0x00) {
-        ESP_LOGD(TAG, "Heating set command successful for address %02X", this->address_);
+        ESP_LOGI(TAG, "Heating set command successful for address %02X", this->address_);
       } else {
         ESP_LOGW(TAG, "Heating set command failed with status %02X for address %02X", status_code, this->address_);
+      }
+      break;
+    case COMMAND_CONTROL_MOSFET:
+      if (status_code == 0x00) {
+        ESP_LOGI(TAG, "Control MOSFET command successful for address %02X", this->address_);
+      } else {
+        ESP_LOGW(TAG, "Control MOSFET command failed with status %02X for address %02X", status_code, this->address_);
       }
       break;
     default:
@@ -1281,42 +1300,50 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       // BMS Version
       if (this->bms_version_text_sensor_) {
         this->bms_version_text_sensor_->publish_state(std::string(reinterpret_cast<const char *>(data), length));
-        ESP_LOGD(TAG, "Address: %d BMS Version: %s", this->address_, this->bms_version_text_sensor_->get_state().c_str());
+        ESP_LOGI(TAG, "Address: %d BMS Version: %s", this->address_, this->bms_version_text_sensor_->get_state().c_str());
       }
       break;
     case COMMAND_BARCODE:
       // Barcode
       if (this->barcode_text_sensor_) {
         this->barcode_text_sensor_->publish_state(std::string(reinterpret_cast<const char *>(data), length));
-        ESP_LOGD(TAG, "Address: %d Barcode: %s", this->address_, this->barcode_text_sensor_->get_state().c_str());
+        ESP_LOGI(TAG, "Address: %d Barcode: %s", this->address_, this->barcode_text_sensor_->get_state().c_str());
       }
       break;
     case (uint8_t)COMMAND_PARAMETERS:
       if (header[3] == (uint8_t)(COMMAND_PARAMETERS >> 8)) {
-        ESP_LOGV(TAG, "Received protect parameters");
+        ESP_LOGV(TAG, "Address: %d Received protect parameters", this->address_);
         handle_parameters(data, length, this->params_protect_, BASEN_BMS_PROTECT_PARAMETERS, protect_param_op, this->param_sensor_);
       } else {
-        ESP_LOGV(TAG, "Received alarm parameters");
+        ESP_LOGV(TAG, "Address: %d Received alarm parameters", this->address_);
         handle_parameters(data, length, this->params_alarm_, BASEN_BMS_ALARM_PARAMETERS, alarm_param_op, this->param_alarm_sensor_);
       }
       break;
     case COMMAND_HEATING_ON_TEMPERATURE:
       if (length < 4) {
-        ESP_LOGW(TAG, "Invalid length for COMMAND_HEATING_ON_TEMPERATURE: %d", length);
+        ESP_LOGW(TAG, "Address: %d Invalid length for COMMAND_HEATING_ON_TEMPERATURE: %d", this->address_, length);
       } else if (this->heating_on_temperature_number_) {
-        ESP_LOGV(TAG, "Heating on temperature: %d", (data[2] << 8) | data[3]);
+        ESP_LOGI(TAG, "Address: %d Heating on temperature: %d", this->address_, (data[2] << 8) | data[3]);
         this->heating_on_temperature_number_->publish_state(((data[2] << 8) | data[3]) - 50.0f);
       }
       break;
     case COMMAND_HEATING_OFF_TEMPERATURE:
       if (length < 4) {
-        ESP_LOGW(TAG, "Invalid length for COMMAND_HEATING_OFF_TEMPERATURE: %d", length);
+        ESP_LOGW(TAG, "Address: %d Invalid length for COMMAND_HEATING_OFF_TEMPERATURE: %d", this->address_, length);
       } else {
         this->heating_off_temperature_ = ((data[2] << 8) | data[3]) - 50.0f;
-        ESP_LOGV(TAG, "Heating off temperature: %f", heating_off_temperature_);
+        ESP_LOGI(TAG, "Address: %d Heating off temperature: %f", this->address_, heating_off_temperature_);
         if (this->heating_off_temperature_number_) {
           this->heating_off_temperature_number_->publish_state(heating_off_temperature_);
         }
+      }
+      break;
+    case COMMAND_GET_BMS_TIME:
+      if (length < 6) {
+        ESP_LOGW(TAG, "Address: %d Invalid length for COMMAND_GET_BMS_TIME: %d", this->address_, length);
+      } else {
+        ESP_LOGI(TAG, "Address: %d BMS time: %04u-%02u-%02u %02u:%02u:%02u", 
+                 this->address_, 2000 + data[0], data[1], data[2], data[3], data[4], data[5]);
       }
       break;
     case COMMAND_INFO:
@@ -1326,7 +1353,7 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       set_connected (true);
       return true;
     default:
-      ESP_LOGW(TAG, "Unknown command: %02X", header[2]);
+      ESP_LOGW(TAG, "Address: %d Unknown command: %02X", this->address_, header[2]);
       return true;
   }
 
@@ -1533,7 +1560,7 @@ void BasenButton::press_action() {
       return;
   }
   if (this->type_ == 0) {
-    ESP_LOGE("BasenNumber", "Parameter type is not set");
+    ESP_LOGE("BasenButton", "Parameter type is not set");
     return;
   }
 
@@ -1567,9 +1594,11 @@ void BasenSwitch::write_state(bool state) {
   switch (this->type_) {
     case 0x00:
       this->publish_state(state);
-      ESP_LOGD(TAG, "Set BMS 0x%02X enable to %s", this->parent_->address_, state ? "true" : "false");
+      ESP_LOGI(TAG, "Set BMS 0x%02X enable to %s", this->parent_->address_, state ? "true" : "false");
       return;
     case COMMAND_HEATING_SET:
+      break;
+    case COMMAND_CONTROL_MOSFET:
       break;
     default:
       ESP_LOGE(TAG, "Parameter type is unsupported: %d", this->type_);
