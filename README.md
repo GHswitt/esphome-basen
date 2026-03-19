@@ -344,6 +344,8 @@ Each frame (command or response) consists of the following bytes:
 | `0x43` | 6 bytes  | `[E0]`                                  | Read protection parameters                            | 210 bytes: records of `[id][pad][Hi][Lo]` per parameter |
 | `0x43` | 6 bytes  | `[00]`                                  | Read alarm parameters                                 | records of `[id][pad][Hi][Lo]` per parameter            |
 | `0x45` | 6 bytes  | —                                       | Read BMS system time                                  | `[06][YY][MM][DD][HH][mm][SS]`             |
+| `0x63` | 8 bytes  | `[02][00][01]`                          | Enable sound/light alarms                             | ACK                                        |
+| `0x63` | 8 bytes  | `[02][00][00]`                          | Disable sound/light alarms                            | ACK                                        |
 | `0x84` | 8 bytes  | `[02][Hi][Lo]`                          | Charge calibration point 1 (voltage)                  | ACK                                        |
 | `0x84` | 8 bytes  | `[02][FF][FF]`                          | Reset charge calibration point 1                      | ACK                                        |
 | `0x85` | 8 bytes  | `[02][Hi][Lo]`                          | Charge calibration point 2 (voltage)                  | ACK                                        |
@@ -362,7 +364,13 @@ Each frame (command or response) consists of the following bytes:
 | `0xCF` | 12 bytes | `[06][YY][MM][DD][HH][mm][SS]`          | Write system time                                     | ACK                                        |
 | `0xD0` | 7 bytes  | `[01][07]`                              | Read start time                                       | `[..][YY][MM][DD][HH][mm][SS]`             |
 | `0xD0` | 7 bytes  | `[01][08]`                              | Read end time                                         | `[..][YY][MM][DD][HH][mm][SS]`             |
-| `0xD0` | 7 bytes  | `[01][09]`                              | Read interval time                                    | `[..][Hi][Lo]`                             |
+| `0xD0` | 7 bytes  | `[01][09]`                              | Read interval time (old)                              | `[..][Hi][Lo]`                             |
+| `0xD0` | 7 bytes  | `[01][10]`                              | Read interval time                                    | `[..][10][Hi][Lo]`                         |
+| `0xD0` | 9 bytes  | `[03][11][Hi][Lo]`                      | Write interval time                                   | ACK                                        |
+| `0xD0` | 7 bytes  | `[01][19]`                              | Read number of records                                | `[..][19][B3][B2][B1][B0]` → 32-bit count  |
+| `0xD0` | 7 bytes  | `[01][1A]`                              | Read records (sequential, via timer)                  | See record format below                    |
+| `0xD0` | 7 bytes  | `[01][E0]`                              | Read recording speed                                  | `[..][E0][Hi][Lo]`                         |
+| `0xD0` | 9 bytes  | `[03][E1][Hi][Lo]`                      | Write recording speed                                 | ACK                                        |
 | `0xD0` | 13 bytes | `[07][04][YY][MM][DD][HH][mm][SS]`      | Write start time                                      | ACK                                        |
 | `0xD0` | 13 bytes | `[07][05][YY][MM][DD][HH][mm][SS]`      | Write end time                                        | ACK                                        |
 | `0xD1` | 8 bytes  | `[02][01][01]`                          | Enable buzzer                                         | ACK                                        |
@@ -372,7 +380,9 @@ Each frame (command or response) consists of the following bytes:
 | `0xD3` | 7 bytes  | `[01][03]`                              | Connect discharge MOS                                 | ACK                                        |
 | `0xD3` | 7 bytes  | `[01][04]`                              | Disconnect discharge MOS                              | ACK                                        |
 | `0xDB` | 9 bytes  | `[03][13][Hi][Lo]`                      | Write nominal capacity                                | ACK                                        |
-| `0xDC` | 7 bytes  | `[01][06]`                              | Read serial number                                    | `[len][ASCII string...]`                   |
+| `0xDC` | 7 bytes  | `[01][06]`                              | Read board info                                       | Board info data                            |
+| `0xDC` | 9 bytes  | `[03][06][00][00]`                      | Read serial number (SN code)                          | `[..][06][ASCII string...][^]`             |
+| `0xDC` | variable | `[n+1][01][ASCII string...][^]`         | Write serial number (SN code, max 35 chars)           | ACK                                        |
 | `0xE2` | 7 bytes  | `[01][01]`                              | Enable fan                                            | ACK                                        |
 | `0xE2` | 7 bytes  | `[01][02]`                              | Disable fan                                           | ACK                                        |
 | `0xE3` | 7 bytes  | `[01][01]`                              | Enable heater                                         | ACK                                        |
@@ -381,8 +391,68 @@ Each frame (command or response) consists of the following bytes:
 | `0xF2` | 8 bytes  | `[02][Hi][Lo]`                          | Set heater ON temperature (wire value = °C + 50)      | ACK + `buffer[4]==0x00`                    |
 | `0xF3` | 6 bytes  | —                                       | Read heater OFF temperature                           | `[..][Hi][Lo]` at [6][7], value − 50 = °C |
 | `0xF4` | 8 bytes  | `[02][Hi][Lo]`                          | Set heater OFF temperature (wire value = °C + 50)     | ACK + `buffer[4]==0x00`                    |
+| `0xFB` | 8 bytes  | `[02][FF][FF]`                          | Unlock BMS                                            | ACK + `buffer[4]==0x00`                    |
+| `0xFC` | 8 bytes  | `[02][00][mask]`                        | Enable anti-theft lock (see lock bitmask below)       | ACK + `buffer[4]==0x00`                    |
+| `0xFC` | 8 bytes  | `[02][00][00]`                          | Disable all anti-theft locks (requires password)      | ACK + `buffer[4]==0x00`                    |
 
+**Anti-theft lock bitmask (`0xFC`):**
 
+| Bit | Value  | Function                      |
+|-----|--------|-------------------------------|
+| 0   | `0x01` | Communication anti-theft      |
+| 1   | `0x02` | Physical anti-theft           |
+| 2   | `0x04` | Charge activation             |
+| 3   | `0x08` | Sleep voltage anti-theft      |
+
+### Storage Record Format (`0xD0` / `0x1A`)
+
+The response to a read records command contains one or more 52-byte records. `buffer[6]` indicates the number of records in the response. End-of-records is signaled when `buffer[3] == 0x0D` and bytes 6–14 are all zeros.
+
+Each 52-byte record (at offset `7 + 52*i` in the raw frame):
+
+| Offset | Size | Field             | Encoding                                  |
+|--------|------|-------------------|-------------------------------------------|
+| 0      | 1    | Event type        | See event type table below                |
+| 1      | 1    | Cell count        | Number of cell voltages (typically 16)    |
+| 2–33   | 32   | Cell voltages     | 16× `((Hi & 0x1F) * 256 + Lo) / 1000.0` V |
+| 34–39  | 6    | Temperatures      | 6× `value − 50` °C (T1–T4, MOS, Ambient) |
+| 40–41  | 2    | Current           | `(30000 − (Hi*256 + Lo)) / 100.0` A      |
+| 42–43  | 2    | Voltage           | `(Hi*256 + Lo) / 1000.0` V               |
+| 44     | 1    | SoC               | Percentage                                |
+| 45     | 1    | Year              | `2000 + value`                            |
+| 46     | 1    | Month             |                                           |
+| 47     | 1    | Day               |                                           |
+| 48     | 1    | Hour              |                                           |
+| 49     | 1    | Minute            |                                           |
+| 50     | 1    | Second            |                                           |
+
+**Event types (protection triggered):**
+
+| Code | Event |
+|------|-------|
+| 1  | Cell over voltage protection |
+| 2  | Cell under voltage protection |
+| 3  | Pack over voltage protection |
+| 4  | Pack under voltage protection |
+| 5  | Charge over current 1 protection |
+| 6  | Charge over current 2 protection |
+| 7  | Discharge over current 1 protection |
+| 8  | Discharge over current 2 protection |
+| 9  | Short circuit protection |
+| 10 | Charging high temperature protection |
+| 11 | Charging low temperature protection |
+| 12 | Discharge high temperature protection |
+| 13 | Discharge low temperature protection |
+| 14 | Start charging |
+| 15 | Start discharging |
+| 16 | Timing record |
+| 17–31 | Various alarm events (cell/pack voltage, current, temperature, MOS, capacity, etc.) |
+| 32–35 | MOS/ambient temperature protection, system start/exit |
+| 36–37 | Start/exit system |
+| 38–40 | MOS failure, reverse protection |
+| 42–45 | Short circuit lock, discharge overcurrent lock, fire alarm, MCB alarm |
+
+**Event types (protection released):** codes 128–165 mirror codes 1–45 as the corresponding release events.
 
 ### Example Command Frame
 

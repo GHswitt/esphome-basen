@@ -1323,8 +1323,9 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       if (length < 4) {
         ESP_LOGW(TAG, "Address: %d Invalid length for COMMAND_HEATING_ON_TEMPERATURE: %d", this->address_, length);
       } else if (this->heating_on_temperature_number_) {
-        ESP_LOGI(TAG, "Address: %d Heating on temperature: %d", this->address_, (data[2] << 8) | data[3]);
-        this->heating_on_temperature_number_->publish_state(((data[2] << 8) | data[3]) - 50.0f);
+        int heating_on_temp = ((data[2] << 8) | data[3]) - 50;
+        ESP_LOGI(TAG, "Address: %d Heating on temperature: %d", this->address_, heating_on_temp);
+        this->heating_on_temperature_number_->publish_state(heating_on_temp);
       }
       break;
     case COMMAND_HEATING_OFF_TEMPERATURE:
