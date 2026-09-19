@@ -44,7 +44,7 @@ light:
   # Internal : only specifying an id without a name will implicitly set this to true.
   - platform: esp32_rmt_led_strip
     id: esp_light
-    rgb_order: GRB
+    channel_colors: GRB
     pin: 4
     num_leds: 1
     # rmt_channel: 0
