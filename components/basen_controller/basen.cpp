@@ -1,6 +1,7 @@
 #include "basen.h"
 #include "esphome/core/log.h"
 #include <algorithm>
+#include <cinttypes>
 #include "esphome/core/helpers.h"
 
 namespace esphome {
@@ -203,7 +204,7 @@ static BasenBMS::PARAM_OPERATION alarm_param_op[] = {
  *
  * This function outputs information about each device managed by the controller,
  * including its address and timeout count, using the ESP_LOGI logging macro.
- * It also checks the UART settings with a baud rate of 9600.
+ * The UART settings are validated in Python (see final_validate_device_schema).
  */
 void BasenController::dump_config() {
   ESP_LOGI(TAG, "Basen:");
@@ -213,8 +214,6 @@ void BasenController::dump_config() {
     ESP_LOGI(TAG, " Device %02X:", device->address_);
     ESP_LOGI(TAG, "  Timeout count: %d", device->timeout_count_);
   }
-
-  check_uart_settings(9600);
 }
 
 
@@ -360,7 +359,7 @@ void BasenController::check_timeout ()
   uint32_t elapsed = now - current_->last_transmission_;
   if (elapsed > timeout_) {
     // Timeout while waiting for data.
-    ESP_LOGW(TAG, "Timeout (%d ms) while waiting for data (%d < %d) for address %02X", elapsed, this->frame_size_, this->rx_required_, current_->address_);
+    ESP_LOGW(TAG, "Timeout (%" PRIu32 " ms) while waiting for data (%d < %d) for address %02X", elapsed, this->frame_size_, this->rx_required_, current_->address_);
     current_->timeout_count_++;
 
     if (retry_++ > 0) {

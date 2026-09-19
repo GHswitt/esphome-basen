@@ -24,6 +24,16 @@ CONFIG_SCHEMA = uart.UART_DEVICE_SCHEMA.extend(
     }
 )
 
+FINAL_VALIDATE_SCHEMA = uart.final_validate_device_schema(
+    "basen_controller",
+    baud_rate=9600,
+    require_tx=True,
+    require_rx=True,
+    data_bits=8,
+    parity="NONE",
+    stop_bits=1,
+)
+
 def BasenBMS_schema():
     schema = {
         cv.GenerateID(CONF_BASEN_CONTROLLER_ID): cv.use_id(BasenController),
