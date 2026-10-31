@@ -2,6 +2,7 @@
 #include "esphome/core/log.h"
 #include <algorithm>
 #include <cinttypes>
+#include <cmath>
 #include "esphome/core/helpers.h"
 
 namespace esphome {
@@ -196,6 +197,32 @@ static BasenBMS::PARAM_OPERATION alarm_param_op[] = {
   {4, 50},   // ENV_UT_START (T)
   {0, 1000}, // ENV_UT_Delay (Delay)
   {4, 50},   // ENV_UT_STOP (T)
+};
+
+// Plausibility limits of the measured current for calibration (A)
+constexpr float CALIBRATION_ZERO_MAX_CURRENT    = 0.5f;
+constexpr float CALIBRATION_POINT_1_MAX_CURRENT = 6.0f;
+constexpr float CALIBRATION_POINT_2_MIN_CURRENT = 4.0f;
+
+// Calibration functions, same order as the CALIBRATION_ enum
+static struct {
+  uint8_t   command;      // Command code
+  uint16_t  min_value;    // Calibration value range (mA), 0 = no value, [FF][FF] is sent
+  uint16_t  max_value;
+  uint8_t   direction;    // Required current direction: 0 = None, 1 = Charging, 2 = Discharging, 3 = No check
+  float     min_current;  // Allowed range of the measured current (A)
+  float     max_current;
+} calibration_functions[CALIBRATION_COUNT] = {
+  {0x00, 0, 0, 3, 0, 0},  // None
+  {COMMAND_CURRENT_ZERO_CALIBRATION, 0,    0,     0, 0, CALIBRATION_ZERO_MAX_CURRENT},
+  {COMMAND_CHARGE_CALIBRATION_1,     1,    5000,  1, 0, CALIBRATION_POINT_1_MAX_CURRENT},
+  {COMMAND_CHARGE_CALIBRATION_2,     5001, 65534, 1, CALIBRATION_POINT_2_MIN_CURRENT, INFINITY},
+  {COMMAND_DISCHARGE_CALIBRATION_1,  1,    5000,  2, 0, CALIBRATION_POINT_1_MAX_CURRENT},
+  {COMMAND_DISCHARGE_CALIBRATION_2,  5001, 65534, 2, CALIBRATION_POINT_2_MIN_CURRENT, INFINITY},
+  {COMMAND_CHARGE_CALIBRATION_1,     0,    0,     3, 0, 0},  // Reset
+  {COMMAND_CHARGE_CALIBRATION_2,     0,    0,     3, 0, 0},  // Reset
+  {COMMAND_DISCHARGE_CALIBRATION_1,  0,    0,     3, 0, 0},  // Reset
+  {COMMAND_DISCHARGE_CALIBRATION_2,  0,    0,     3, 0, 0},  // Reset
 };
 
 
@@ -1189,11 +1216,16 @@ void BasenBMS::queue_command(const uint16_t command) {
  * 
  * This function constructs a command frame with the specified command,
  * calculates the checksum, and appends it to the transmission buffer.
- * 
- * @param command The command to be sent to the BasenBMS.
- * @param data    A vector containing the data to be sent with the command.
+ *
+ * A priority command is inserted at the front of the transmission buffer and an update
+ * is requested, so it is sent as soon as possible. While the device is updating, the
+ * front command may be waiting for its response, so the command is inserted behind it.
+ *
+ * @param command  The command to be sent to the BasenBMS.
+ * @param data     A vector containing the data to be sent with the command.
+ * @param priority Send the command before all other queued commands.
  */
-void BasenBMS::queue_data(const uint8_t command, std::vector<uint8_t> &data) {
+void BasenBMS::queue_data(const uint8_t command, std::vector<uint8_t> &data, bool priority) {
   std::vector<uint8_t> frame = {SOI, this->address_, command, (uint8_t)(data.size())};
 
   // Add data
@@ -1205,7 +1237,20 @@ void BasenBMS::queue_data(const uint8_t command, std::vector<uint8_t> &data) {
   // Add EOI
   frame.push_back(EOI);
 
-  this->tx_buffer_.push_back({this, frame});
+  if (!priority) {
+    this->tx_buffer_.push_back({this, frame});
+    return;
+  }
+
+  if ((this->state_ == BMS_STATE_UPDATING) && !this->tx_buffer_.empty()) {
+    // Front command may be waiting for its response
+    this->tx_buffer_.insert(this->tx_buffer_.begin() + 1, {this, frame});
+  } else {
+    this->tx_buffer_.push_front({this, frame});
+  }
+
+  // Request an update
+  this->update();
 }
 
 /**
@@ -1272,6 +1317,17 @@ void BasenBMS::handle_status (const uint8_t command, const uint8_t status_code) 
         ESP_LOGI(TAG, "Control MOSFET command successful for address %02X", this->address_);
       } else {
         ESP_LOGW(TAG, "Control MOSFET command failed with status %02X for address %02X", status_code, this->address_);
+      }
+      break;
+    case COMMAND_CURRENT_ZERO_CALIBRATION:
+    case COMMAND_CHARGE_CALIBRATION_1:
+    case COMMAND_CHARGE_CALIBRATION_2:
+    case COMMAND_DISCHARGE_CALIBRATION_1:
+    case COMMAND_DISCHARGE_CALIBRATION_2:
+      if (status_code == 0x00) {
+        ESP_LOGI(TAG, "Calibration command %02X successful for address %02X", command, this->address_);
+      } else {
+        ESP_LOGW(TAG, "Calibration command %02X failed with status %02X for address %02X", command, status_code, this->address_);
       }
       break;
     default:
@@ -1354,6 +1410,15 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
         ESP_LOGI(TAG, "Address: %d BMS time: %04u-%02u-%02u %02u:%02u:%02u", 
                  this->address_, 2000 + data[0], data[1], data[2], data[3], data[4], data[5]);
       }
+      break;
+    case COMMAND_CURRENT_ZERO_CALIBRATION:
+    case COMMAND_CHARGE_CALIBRATION_1:
+    case COMMAND_CHARGE_CALIBRATION_2:
+    case COMMAND_DISCHARGE_CALIBRATION_1:
+    case COMMAND_DISCHARGE_CALIBRATION_2:
+      // Response format is unknown, log it for analysis
+      ESP_LOGI(TAG, "Address: %d Calibration reply received for command %02X: %s",
+               this->address_, header[2], format_hex_pretty(data, length).c_str());
       break;
     case COMMAND_INFO:
       handle_info(data, length);
@@ -1520,6 +1585,118 @@ void BasenBMS::handle_parameters (const uint8_t *data, const uint8_t length, uin
   }
 }
 
+/**
+ * @brief Executes the calibration function selected with the calibration select.
+ *
+ * The calibration value (mA) is taken from the calibration value number. Before a calibration
+ * command is sent, the value range and the last data received from the BMS are checked
+ * (connected, current direction from the status flags and current magnitude). Reset functions
+ * skip these checks. The select and the number are reset afterwards, whether the command was
+ * sent or not.
+ */
+void BasenBMS::calibrate() {
+  if ((this->calibration_select_ == nullptr) || (this->calibration_value_number_ == nullptr)) {
+    ESP_LOGE(TAG, "Address: %d Calibration select/number not configured", this->address_);
+    return;
+  }
+
+  auto index = this->calibration_select_->active_index();
+  float value = this->calibration_value_number_->state;
+
+  // Reset select and number to avoid repeated calibration
+  this->calibration_select_->reset();
+  this->calibration_value_number_->publish_state(0);
+
+  if (!index.has_value() || (*index == CALIBRATION_NONE) || (*index >= CALIBRATION_COUNT)) {
+    ESP_LOGW(TAG, "Address: %d No calibration function selected", this->address_);
+    return;
+  }
+
+  const auto &function = calibration_functions[*index];
+
+  // Check current direction and magnitude
+  if (function.direction != 3) {
+    if (!this->connected_) {
+      ESP_LOGW(TAG, "Address: %d Calibration refused, device not connected", this->address_);
+      return;
+    }
+
+    bool charging = this->status_bitmask_[3] & 0x01;
+    bool discharging = this->status_bitmask_[3] & 0x02;
+
+    if ((function.direction == 0) && (charging || discharging)) {
+      ESP_LOGW(TAG, "Address: %d Calibration refused, current is flowing", this->address_);
+      return;
+    }
+    if ((function.direction == 1) && !charging) {
+      ESP_LOGW(TAG, "Address: %d Calibration refused, battery is not charging", this->address_);
+      return;
+    }
+    if ((function.direction == 2) && !discharging) {
+      ESP_LOGW(TAG, "Address: %d Calibration refused, battery is not discharging", this->address_);
+      return;
+    }
+
+    float current = fabsf(this->current_);
+    if ((current < function.min_current) || (current > function.max_current)) {
+      ESP_LOGW(TAG, "Address: %d Calibration refused, measured current %.2f A not in range %.1f-%.1f A",
+               this->address_, current, function.min_current, function.max_current);
+      return;
+    }
+  }
+
+  // Calibration value
+  uint16_t data16 = 0xFFFF;
+  if (function.min_value != 0) {
+    if (std::isnan(value) || (value < function.min_value) || (value > function.max_value)) {
+      ESP_LOGW(TAG, "Address: %d Calibration refused, value %.0f not in range %u-%u mA",
+               this->address_, value, function.min_value, function.max_value);
+      return;
+    }
+    data16 = static_cast<uint16_t>(lroundf(value));
+  }
+
+  ESP_LOGI(TAG, "Address: %d Sending calibration command %02X with value %04X", this->address_, function.command, data16);
+
+  // High byte first
+  std::vector<uint8_t> data = {static_cast<uint8_t>(data16 >> 8), static_cast<uint8_t>(data16 & 0xFF)};
+  this->queue_data(function.command, data, true);
+}
+
+void BasenSelect::setup() {
+  this->reset();
+}
+
+void BasenSelect::dump_config() {
+  LOG_SELECT("", "BasenSelect", this);
+}
+
+/**
+ * @brief Resets the select to the first option (None).
+ */
+void BasenSelect::reset() {
+  auto option = this->at(0);
+  if (option.has_value())
+    this->publish_state(*option);
+}
+
+void BasenSelect::control(const std::string &value) {
+  this->publish_state(value);
+}
+
+void BasenButton::dump_config() {
+  LOG_BUTTON("", "BasenButton", this);
+}
+
+void BasenButton::press_action() {
+  if (this->parent_ == nullptr) {
+    ESP_LOGE(TAG, "Parent is null");
+    return;
+  }
+
+  this->parent_->calibrate();
+}
+
 void BasenNumber::dump_config() {
   LOG_NUMBER("", "BasenNumber", this);
 }
@@ -1529,8 +1706,9 @@ void BasenNumber::control(float value) {
       ESP_LOGE("BasenNumber", "Parent is null");
       return;
   }
-  if (this->type_ == 0) {
-    ESP_LOGE("BasenNumber", "Parameter type is not set");
+  if (this->type_ == 0x00) {
+    // Value only, used by another entity (e.g. calibration value)
+    this->publish_state(value);
     return;
   }
 

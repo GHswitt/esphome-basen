@@ -5,6 +5,8 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/number/number.h"
+#include "esphome/components/select/select.h"
+#include "esphome/components/button/button.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/uart/uart.h"
 
@@ -38,6 +40,26 @@ constexpr uint8_t    COMMAND_CONTROL_MOSFET_CHARGE_ON     = 0x01;
 constexpr uint8_t    COMMAND_CONTROL_MOSFET_CHARGE_OFF    = 0x02;
 constexpr uint8_t    COMMAND_CONTROL_MOSFET_DISCHARGE_ON  = 0x03;
 constexpr uint8_t    COMMAND_CONTROL_MOSFET_DISCHARGE_OFF = 0x04;
+constexpr uint8_t  COMMAND_CURRENT_ZERO_CALIBRATION       = 0x60;
+constexpr uint8_t  COMMAND_CHARGE_CALIBRATION_1           = 0x84;  // 1-5000 mA
+constexpr uint8_t  COMMAND_CHARGE_CALIBRATION_2           = 0x85;  // >5000 mA
+constexpr uint8_t  COMMAND_DISCHARGE_CALIBRATION_1        = 0x86;  // 1-5000 mA
+constexpr uint8_t  COMMAND_DISCHARGE_CALIBRATION_2        = 0x87;  // >5000 mA
+
+// Calibration functions, must match the order of the options in select.py
+enum {
+  CALIBRATION_NONE = 0,
+  CALIBRATION_CURRENT_ZERO,
+  CALIBRATION_CURRENT_CHARGE_1,
+  CALIBRATION_CURRENT_CHARGE_2,
+  CALIBRATION_CURRENT_DISCHARGE_1,
+  CALIBRATION_CURRENT_DISCHARGE_2,
+  CALIBRATION_RESET_CURRENT_CHARGE_1,
+  CALIBRATION_RESET_CURRENT_CHARGE_2,
+  CALIBRATION_RESET_CURRENT_DISCHARGE_1,
+  CALIBRATION_RESET_CURRENT_DISCHARGE_2,
+  CALIBRATION_COUNT
+};
 
 // Number of parameters
 #define BASEN_BMS_PROTECT_PARAMETERS  0x33
@@ -199,6 +221,34 @@ class BasenNumber : public number::Number, public Component {
   uint8_t type_{0};
 };
 
+class BasenSelect : public select::Select, public Component {
+ public:
+  void setup() override;
+  void dump_config() override;
+  float get_setup_priority() const override { return setup_priority::DATA; }
+
+  void set_parent(BasenBMS *parent) { parent_ = parent; }
+  void reset();
+
+ protected:
+  void control(const std::string &value) override;
+
+  BasenBMS *parent_;
+};
+
+class BasenButton : public button::Button, public Component {
+ public:
+  void dump_config() override;
+  float get_setup_priority() const override { return setup_priority::DATA; }
+
+  void set_parent(BasenBMS *parent) { parent_ = parent; }
+
+ protected:
+  void press_action() override;
+
+  BasenBMS *parent_;
+};
+
 class BasenSwitch : public switch_::Switch, public Component {
  public:
   BasenSwitch() = default;
@@ -277,6 +327,12 @@ class BasenBMS : public PollingComponent {
   }
   void set_heating_off_temperature_number(BasenNumber *number) {
     heating_off_temperature_number_ = number;
+  }
+  void set_calibration_value_number(BasenNumber *number) {
+    calibration_value_number_ = number;
+  }
+  void set_calibration_select(BasenSelect *select) {
+    calibration_select_ = select;
   }
   void set_heating_switch(BasenSwitch *sw) {
     heating_switch_ = sw;
@@ -380,6 +436,8 @@ class BasenBMS : public PollingComponent {
  protected:
   friend BasenController;
   friend BasenNumber;
+  friend BasenSelect;
+  friend BasenButton;
   friend BasenSwitch;
   uint8_t address_{1};
   uint16_t timeout_count_{0};
@@ -393,6 +451,7 @@ class BasenBMS : public PollingComponent {
     BMS_STATE_DISABLED
   };
   uint8_t state_{0};
+  bool connected_{false};
   uint32_t last_transmission_{0};
 
   // TX command buffer
@@ -409,6 +468,8 @@ class BasenBMS : public PollingComponent {
   binary_sensor::BinarySensor *heating_status_binary_sensor_{nullptr};
   BasenNumber *heating_on_temperature_number_{nullptr};
   BasenNumber *heating_off_temperature_number_{nullptr};
+  BasenNumber *calibration_value_number_{nullptr};
+  BasenSelect *calibration_select_{nullptr};
   BasenSwitch *heating_switch_{nullptr};
   BasenSwitch *enable_switch_{nullptr};
   BasenSwitch *charge_switch_{nullptr};
@@ -444,7 +505,8 @@ class BasenBMS : public PollingComponent {
 
   void add_startup_commands();
   void queue_command(const uint16_t command);
-  void queue_data(const uint8_t command, std::vector<uint8_t> &data);
+  void queue_data(const uint8_t command, std::vector<uint8_t> &data, bool priority = false);
+  void calibrate();
 
   void handle_status (const uint8_t command, const uint8_t status_code);
   bool handle_data (const uint8_t *header, const uint8_t *data, uint8_t length);
@@ -464,6 +526,8 @@ class BasenBMS : public PollingComponent {
   void timeout();
 
   void set_connected (bool connected) {
+    this->connected_ = connected;
+
     if (this->connected_binary_sensor_ == nullptr)
       return;
 

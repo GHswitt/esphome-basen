@@ -129,3 +129,22 @@ switch:
     basen_bms_id: ${basen_bms_id}
     discharge:
       name: "${name} Discharge"
+
+# Current calibration, see README before using it
+#select:
+#  - platform: basen_bms
+#    basen_bms_id: ${basen_bms_id}
+#    calibration:
+#      name: "${name} Calibration function"
+#
+#number:
+#  - platform: basen_bms
+#    basen_bms_id: ${basen_bms_id}
+#    calibration_value:
+#      name: "${name} Calibration value"
+#
+#button:
+#  - platform: basen_bms
+#    basen_bms_id: ${basen_bms_id}
+#    calibration:
+#      name: "${name} Calibrate"

@@ -18,10 +18,12 @@ CODEOWNERS = ["GHswitt"]
 
 CONF_HEATING_ON_TEMPERATURE = "heating_on_temperature"
 CONF_HEATING_OFF_TEMPERATURE = "heating_off_temperature"
+CONF_CALIBRATION_VALUE = "calibration_value"
 
 NUMBERS = {
     CONF_HEATING_ON_TEMPERATURE     : 0xF2,
-    CONF_HEATING_OFF_TEMPERATURE    : 0xF4
+    CONF_HEATING_OFF_TEMPERATURE    : 0xF4,
+    CONF_CALIBRATION_VALUE          : 0x00,  # Value only, used by the calibration button
 }
 
 BasenNumber = basen_ns.class_("BasenNumber", number.Number, cg.Component)
@@ -32,6 +34,21 @@ BASEN_NUMBER_SCHEMA = (
         icon=ICON_EMPTY,
         entity_category=ENTITY_CATEGORY_CONFIG,
         unit_of_measurement=UNIT_CELSIUS,
+    )
+    .extend(
+        {
+            cv.Optional(CONF_MODE, default="BOX"): cv.enum(number.NUMBER_MODES, upper=True),
+        }
+    )
+    .extend(cv.COMPONENT_SCHEMA)
+)
+
+# No unit, the unit depends on the selected calibration function
+BASEN_CALIBRATION_NUMBER_SCHEMA = (
+    number.number_schema(
+        BasenNumber,
+        icon="mdi:tune",
+        entity_category=ENTITY_CATEGORY_CONFIG,
     )
     .extend(
         {
@@ -58,6 +75,13 @@ CONFIG_SCHEMA = cv.Schema(
                 cv.Optional(CONF_MAX_VALUE, default=30): cv.float_,
                 cv.Optional(CONF_STEP, default=1): cv.float_,
                 cv.Optional(CONF_ICON, default="mdi:radiator-off"): cv.icon,
+            }
+        ),
+        cv.Optional(CONF_CALIBRATION_VALUE): BASEN_CALIBRATION_NUMBER_SCHEMA.extend(
+            {
+                cv.Optional(CONF_MIN_VALUE, default=0): cv.float_,
+                cv.Optional(CONF_MAX_VALUE, default=65534): cv.float_,
+                cv.Optional(CONF_STEP, default=1): cv.float_,
             }
         ),
     }

@@ -300,6 +300,51 @@ number:
       name: "${name} Heating Off Temperature"
 ```
 
+### Current calibration
+
+The current measurement of the BMS can be calibrated with three entities: a `select` for the calibration function, a `number` for the calibration value and a `button` to execute the selected function. The entities are only created when configured.
+
+> **Warning:** The BMS uses the measured current for its protection functions. Read the [calibration description](#current-calibration-1) before using these entities. This function has not been tested yet.
+
+```yaml
+select:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    calibration:
+      name: "${name} Calibration function"
+
+number:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    calibration_value:
+      name: "${name} Calibration value"
+
+button:
+  - platform: basen_bms
+    basen_bms_id: ${basen_bms_id}
+    calibration:
+      name: "${name} Calibrate"
+```
+
+| Function                                 | Value                       | Required state                          |
+|------------------------------------------|-----------------------------|-----------------------------------------|
+| `Current zero point`                     | —                           | Not charging/discharging, current < 0.5 A |
+| `Current charge point 1 (mA, ≤5000)`     | Measured current 1–5000 mA  | Charging, current ≤ 6 A                 |
+| `Current charge point 2 (mA, >5000)`     | Measured current 5001–65534 mA | Charging, current ≥ 4 A              |
+| `Current discharge point 1 (mA, ≤5000)`  | Measured current 1–5000 mA  | Discharging, current ≤ 6 A              |
+| `Current discharge point 2 (mA, >5000)`  | Measured current 5001–65534 mA | Discharging, current ≥ 4 A           |
+| `Reset current ... point 1/2`            | —                           | —                                       |
+
+Usage:
+
+1. Set up the required state (see table and the [calibration steps](#current-calibration-1)) and measure the current with a reference meter.
+2. Select the calibration function.
+3. Enter the measured current in mA as calibration value (not required for zero point and reset).
+4. Press the calibrate button.
+5. Check the log: the command is only sent if the value is in range, the device is connected and the last data received from the BMS matches the required state (charging/discharging flags of the status and current range). Otherwise the reason is logged. The result of the command is logged as well.
+
+After pressing the button, the function is reset to `None` and the value to 0, so pressing the button again does nothing.
+
 ## BMS Serial Protocol Description
 
 The BMS uses a custom UART serial protocol for communication. Below is a summary of the protocol structure and behavior:
@@ -310,7 +355,7 @@ Each frame (command or response) consists of the following bytes:
 
 | Byte(s) | Description                                      |
 |---------|--------------------------------------------------|
-| 0       | SOI (Start of Information), always `0x7E`        |
+| 0       | SOI (Start of Information), `0x7E` (some firmware variants use `0x7C`, see below) |
 | 1       | Address (device address, usually `0x01`)         |
 | 2       | Command code (e.g., `0x01` for info, `0x33` for version) |
 | 3       | Secondary command code or for response data length (number of data bytes to follow)     |
@@ -325,6 +370,24 @@ Each frame (command or response) consists of the following bytes:
   - `num1` is the XOR of all bytes.
   - `num2` is the sum of all bytes.
   - The checksum byte is `(num1 ^ num2) & 0xFF`.
+
+### Start Byte Variants
+
+The vendor tool supports two start bytes: `0x7E` (default) and `0x7C`. If communication fails, it alternates between both values to find out which one the BMS uses. The current calibration commands (`0x84`–`0x87`) are always sent with `0x7C` by the vendor tool, all other commands use the detected start byte. It is unknown whether a BMS using `0x7E` also accepts the current calibration commands with `0x7E`.
+
+### Response Status
+
+Write commands are answered with a status frame with one data byte (`[01][status]`). `00H` means success, other values are error codes:
+
+| Code  | Meaning              |
+|-------|----------------------|
+| `00H` | Normal (success)     |
+| `01H` | VER error            |
+| `02H` | Checksum error       |
+| `03H` | Length checksum error |
+| `04H` | CID2 (command) invalid |
+| `05H` | Command format error |
+| `06H` | Invalid data         |
 
 ### Command Codes
 
@@ -344,13 +407,14 @@ Each frame (command or response) consists of the following bytes:
 | `0x43` | 6 bytes  | `[E0]`                                  | Read protection parameters                            | 210 bytes: records of `[id][pad][Hi][Lo]` per parameter |
 | `0x43` | 6 bytes  | `[00]`                                  | Read alarm parameters                                 | records of `[id][pad][Hi][Lo]` per parameter            |
 | `0x45` | 6 bytes  | —                                       | Read BMS system time                                  | `[06][YY][MM][DD][HH][mm][SS]`             |
+| `0x60` | 8 bytes  | `[02][FF][FF]`                          | Current zero point calibration (ML5238 AFE), see [Calibration](#calibration) | ACK + `buffer[4]==0x00`    |
 | `0x63` | 8 bytes  | `[02][00][01]`                          | Enable sound/light alarms                             | ACK                                        |
 | `0x63` | 8 bytes  | `[02][00][00]`                          | Disable sound/light alarms                            | ACK                                        |
-| `0x84` | 8 bytes  | `[02][Hi][Lo]`                          | Charge calibration point 1 (voltage)                  | ACK                                        |
-| `0x84` | 8 bytes  | `[02][FF][FF]`                          | Reset charge calibration point 1                      | ACK                                        |
-| `0x85` | 8 bytes  | `[02][Hi][Lo]`                          | Charge calibration point 2 (voltage)                  | ACK                                        |
-| `0x86` | 8 bytes  | `[02][Hi][Lo]`                          | Discharge calibration point 1 (voltage)               | ACK                                        |
-| `0x87` | 8 bytes  | `[02][Hi][Lo]`                          | Discharge calibration point 2 (voltage)               | ACK                                        |
+| `0x84` | 8 bytes  | `[02][Hi][Lo]`                          | Charge current calibration point 1 (1–5000 mA), value in mA | ACK                                  |
+| `0x85` | 8 bytes  | `[02][Hi][Lo]`                          | Charge current calibration point 2 (>5000 mA), value in mA  | ACK                                  |
+| `0x86` | 8 bytes  | `[02][Hi][Lo]`                          | Discharge current calibration point 1 (1–5000 mA), value in mA | ACK                               |
+| `0x87` | 8 bytes  | `[02][Hi][Lo]`                          | Discharge current calibration point 2 (>5000 mA), value in mA  | ACK                               |
+| `0x84`–`0x87` | 8 bytes | `[02][FF][FF]`                    | Reset the corresponding current calibration point     | ACK                                        |
 | `0x92` | 8 bytes  | `[02][02][n]`                           | Set cell string count (no ACK, requires reset)        | None                                       |
 | `0x93` | 8 bytes  | `[02][Hi][Lo]`                          | Write loop/cycle count                                | ACK                                        |
 | `0x95` | 8 bytes  | `[02][Hi][Lo]`                          | Write short-circuit protection count                  | ACK                                        |
@@ -379,6 +443,8 @@ Each frame (command or response) consists of the following bytes:
 | `0xD3` | 7 bytes  | `[01][02]`                              | Disconnect charge MOS                                 | ACK                                        |
 | `0xD3` | 7 bytes  | `[01][03]`                              | Connect discharge MOS                                 | ACK                                        |
 | `0xD3` | 7 bytes  | `[01][04]`                              | Disconnect discharge MOS                              | ACK                                        |
+| `0xD6` | 10 bytes | `[04][2·n−1][02][Hi][Lo]`               | Cell n voltage calibration point A (2500–3800 mV), value in mV | ACK                               |
+| `0xD6` | 10 bytes | `[04][2·n][02][Hi][Lo]`                 | Cell n voltage calibration point B (2500–3800 mV), value in mV | ACK                               |
 | `0xDB` | 9 bytes  | `[03][13][Hi][Lo]`                      | Write nominal capacity                                | ACK                                        |
 | `0xDC` | 7 bytes  | `[01][06]`                              | Read board info                                       | Board info data                            |
 | `0xDC` | 9 bytes  | `[03][06][00][00]`                      | Read serial number (SN code)                          | `[..][06][ASCII string...][^]`             |
@@ -486,6 +552,68 @@ A typical response might look like:
     00 40 00 00 0f 01 00 05 75 06 10 01 00 04 4b a2   .@......u.....K¢ 
     62 0d                                             b.    
 ```
+
+### Calibration
+
+The BMS supports calibration of the current measurement and of the individual cell voltages. The current calibration is available in this component (see [Current calibration](#current-calibration)), the cell voltage calibration is **not implemented**. The description is based on the vendor tool and has not been tested.
+
+> **Warning:** The BMS uses the measured values for its protection functions. A wrong calibration value results in wrong voltage/current readings and therefore in wrong protection behavior. Calibrate one point at a time, check the response and verify the readings afterwards.
+
+#### Current Calibration
+
+The current is calibrated with a zero point and two points per direction (charge/discharge). The calibration value is the actual current in mA as measured with a reference meter (e.g. a calibrated clamp meter or a shunt in series with the battery). Sending `[FF][FF]` instead of a value resets a calibration point.
+
+| Step | Command | Condition | Example frame (address `0x01`) |
+|------|---------|-----------|--------------------------------|
+| 1 | `0x60` zero point | No current (charger and load disconnected) | `7e 01 60 02 ff ff c2 0d` |
+| 2 | `0x84` charge point 1 | Stable charge current between 1 and 5000 mA | 3000 mA: `7c 01 84 02 0b b8 8e 0d` |
+| 3 | `0x85` charge point 2 | Stable charge current above 5000 mA | |
+| 4 | `0x86` discharge point 1 | Stable discharge current between 1 and 5000 mA | |
+| 5 | `0x87` discharge point 2 | Stable discharge current above 5000 mA | |
+
+Steps:
+
+1. Disconnect charger and load and wait until the current reading of the BMS has settled. Send the zero point calibration `0x60`. The response must contain `0x60` in byte 2 and `0x00` in byte 4.
+2. Connect a charger and set a stable charge current between 1 and 5000 mA (e.g. 3 A). Measure the current with the reference meter.
+3. Send `0x84` with the measured current in mA (big-endian, e.g. 3000 mA = `0x0BB8`). The current must not change while the command is sent. The response must contain `0x84` in byte 2.
+4. Increase the charge current to a stable value above 5000 mA (preferably close to the typical operating current) and send `0x85` with the measured value.
+5. Disconnect the charger, connect a load and repeat steps 2–4 for the discharge direction with `0x86` (1–5000 mA) and `0x87` (>5000 mA). The value is presumably the magnitude of the current (positive value), as the direction is given by the command.
+6. Verify the `current` sensor against the reference meter at several currents in both directions. If a point is wrong, reset it with `[FF][FF]` and repeat the step.
+
+Notes:
+
+- The vendor tool sends `0x84`–`0x87` with start byte `0x7C` (see [Start Byte Variants](#start-byte-variants)). If the BMS does not respond to `0x7E`, try `0x7C`.
+- The value is 16 bit, so the maximum calibration current is 65534 mA (`0xFFFF` is reserved for reset).
+
+#### Cell Voltage Calibration
+
+The cell voltages are calibrated with two points (A and B) per cell. The calibration value is the actual cell voltage in mV as measured with a precise multimeter (resolution of 1 mV or better) directly at the BMS balance connector. The value must be between 2500 and 3800 mV.
+
+The selector byte (byte 4) defines cell and point:
+
+| Cell | Point A | Point B |
+|------|---------|---------|
+| n    | `2·n − 1` | `2·n` |
+| 1    | `0x01`  | `0x02`  |
+| 2    | `0x03`  | `0x04`  |
+| 16   | `0x1F`  | `0x20`  |
+
+Example: cell 1, point A, 3300 mV (`0x0CE4`): `7e 01 d6 04 01 02 0c e4 0a 0d`
+
+Steps:
+
+1. Disconnect charger and load and wait until the cell voltages have settled (no current, no balancing).
+2. Measure the voltage of cell n at the balance connector.
+3. Send `0xD6` with selector `2·n − 1` (point A) and the measured voltage in mV. The response must contain `0xD6` in byte 2.
+4. Repeat steps 2–3 for all cells.
+5. Bring the cells to a clearly different voltage for the second point. The vendor tool documentation mentions 2.5 V and 3.8 V as calibration voltages, so the two points should be as far apart as possible. With real cells this means a different state of charge; alternatively use an adjustable precision power supply or a cell simulator instead of the cells.
+6. Measure each cell again and send `0xD6` with selector `2·n` (point B) and the measured voltage.
+7. Verify the `cell_voltage_XX` sensors against the multimeter.
+
+Notes:
+
+- The vendor tool also provides an "All Calibration" function: if all cells have the same voltage (e.g. with a cell simulator), it sends the same value to cells 1 to N, one frame per cell, waiting for each response.
+- The vendor tool does not state whether point A has to be the lower or the higher voltage. Using A for the lower and B for the higher voltage is an assumption.
 
 ### Notes
 
