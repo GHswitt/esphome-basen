@@ -5,7 +5,6 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/components/number/number.h"
-#include "esphome/components/button/button.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/uart/uart.h"
 
@@ -85,6 +84,7 @@ class BasenController : public uart::UARTDevice, public Component {
   void send_frame(BasenCommand &command);
   void queue_device(BasenBMS *bms);
   void update_device();
+  void command_failed();
   void check_timeout();
   void uart_loop();
 
@@ -199,34 +199,12 @@ class BasenNumber : public number::Number, public Component {
   uint8_t type_{0};
 };
 
-class BasenButton : public button::Button, public Component {
- public:
-  BasenButton() = default;
-
-  virtual ~BasenButton() = default;
-
-  void dump_config() override;
-  void loop() override {}
-  float get_setup_priority() const override { return setup_priority::DATA; }
-
-  void set_parent(BasenBMS *parent) { parent_ = parent; }
-  void set_type(uint8_t type, uint8_t data) { type_ = type; data_ = data; }
-
- protected:
-  void press_action() override;
-
-  BasenBMS *parent_;
-  uint8_t type_{0};
-  uint8_t data_{0};
-};
-
 class BasenSwitch : public switch_::Switch, public Component {
  public:
   BasenSwitch() = default;
-
-  explicit BasenSwitch(bool initial_state);
   virtual ~BasenSwitch() = default;
 
+  void setup() override;
   void dump_config() override;
   void loop() override {}
   float get_setup_priority() const override { return setup_priority::DATA; }
@@ -254,8 +232,6 @@ class BasenSwitch : public switch_::Switch, public Component {
 class BasenBMS : public PollingComponent {
  public:
   void update();
-  void dump_config() override;
-  void setup() override;
 
   void set_parent(BasenController *parent) { parent_ = parent; parent->register_bms(this); }
   void set_address(uint8_t address) { address_ = address; }
@@ -307,8 +283,6 @@ class BasenBMS : public PollingComponent {
   }
   void set_enable_switch(BasenSwitch *sw) {
     enable_switch_ = sw;
-    // ALWAYS_ON
-    enable_switch_->publish_state(true);
   }
   void set_charge_switch(BasenSwitch *sw) {
     charge_switch_ = sw;
@@ -406,7 +380,6 @@ class BasenBMS : public PollingComponent {
  protected:
   friend BasenController;
   friend BasenNumber;
-  friend BasenButton;
   friend BasenSwitch;
   uint8_t address_{1};
   uint16_t timeout_count_{0};
@@ -462,8 +435,8 @@ class BasenBMS : public PollingComponent {
   float heating_off_temperature_{-100.0f};  // Heating off temperature
 
   // Protect parameters
-  uint16_t params_protect_[BASEN_BMS_PROTECT_PARAMETERS];  // Protect parameters
-  uint16_t params_alarm_[BASEN_BMS_ALARM_PARAMETERS];      // Alarm parameters
+  uint16_t params_protect_[BASEN_BMS_PROTECT_PARAMETERS]{0};  // Protect parameters
+  uint16_t params_alarm_[BASEN_BMS_ALARM_PARAMETERS]{0};  // Alarm parameters
 
   void publish(void);
   void publish_status();
@@ -473,7 +446,7 @@ class BasenBMS : public PollingComponent {
   void queue_command(const uint16_t command);
   void queue_data(const uint8_t command, std::vector<uint8_t> &data);
 
-  void handle_status (const uint16_t command, const uint8_t status_code);
+  void handle_status (const uint8_t command, const uint8_t status_code);
   bool handle_data (const uint8_t *header, const uint8_t *data, uint8_t length);
   void handle_info(const uint8_t *data, uint8_t length);
   uint8_t handle_cell_voltages(const uint8_t *data, uint8_t length);

@@ -345,12 +345,36 @@ void BasenController::send_frame(BasenCommand &command) {
 }
 
 /**
+ * @brief Handles a failed command (timeout or invalid response).
+ *
+ * The command stays in the TX queue and is sent again once. If the retry fails as well,
+ * the device is marked as offline (or disabled) and the controller moves on to the next device.
+ * The controller state is set to bus check in both cases.
+ */
+void BasenController::command_failed ()
+{
+  if (retry_++ > 0) {
+    // Second try, check if enabled
+    if (current_->is_enabled()) {
+      // Mark as offline and move to next device
+      current_->timeout();
+    } else {
+      // Disable device
+      current_->disable();
+    }
+
+    current_ = NULL;  // Reset current device
+    retry_ = 0;
+  }
+  set_state (STATE_BUS_CHECK);
+}
+
+/**
  * @brief Checks if the current device communication has timed out.
  *
  * This method compares the elapsed time since the last transmission to the configured timeout value.
- * If a timeout is detected, it logs a warning, increments the device's timeout counter, updates the
- * connected binary sensor to indicate disconnection, marks the device state as done, resets the current
- * device pointer, and sets the controller state to bus check.
+ * If a timeout is detected, it logs a warning, increments the device's timeout counter and
+ * handles the failed command (see command_failed).
  */
 void BasenController::check_timeout ()
 {
@@ -361,21 +385,7 @@ void BasenController::check_timeout ()
     // Timeout while waiting for data.
     ESP_LOGW(TAG, "Timeout (%" PRIu32 " ms) while waiting for data (%d < %d) for address %02X", elapsed, this->frame_size_, this->rx_required_, current_->address_);
     current_->timeout_count_++;
-
-    if (retry_++ > 0) {
-      // Second try, check if enabled
-      if (current_->is_enabled()) {
-        // Mark as offline and move to next device
-        current_->timeout();
-      } else {
-        // Disable device
-        current_->disable();
-      }
-
-      current_ = NULL;  // Reset current device
-      retry_ = 0;
-    }
-    set_state (STATE_BUS_CHECK);
+    command_failed();
   }
 }
 
@@ -486,7 +496,7 @@ void BasenController::uart_loop() {
     // Check if we have enough space in the frame buffer
     if (this->frame_size_ + available_bytes >= sizeof(this->frame_)) {
       ESP_LOGW(TAG, "Frame buffer overflow, clearing RX buffer");
-      set_state (STATE_BUS_CHECK);
+      command_failed();
       return;
     }
 
@@ -508,7 +518,7 @@ void BasenController::uart_loop() {
     if (frame_[0] != SOI || frame_[1] != this->header_[1] || frame_[2] != this->header_[2]) {
         ESP_LOGW(TAG, "Header does not match expected values: %02X %02X %02X != %02X %02X %02X", 
                  frame_[0], frame_[1], frame_[2], this->header_[0], this->header_[1], this->header_[2]);
-        set_state (STATE_BUS_CHECK);
+        command_failed();
         return;
     }
 
@@ -519,17 +529,20 @@ void BasenController::uart_loop() {
       // Command echo, verify EOI
       if (frame_[5] != EOI) {
         ESP_LOGW(TAG, "Invalid EOI");
-        set_state (STATE_BUS_CHECK);
+        command_failed();
+        return;
       }
 
-      // Wait for header from BMS
+      // Drop echo and wait for header from BMS
+      this->frame_size_ -= 6;
+      memmove(this->frame_, this->frame_ + 6, this->frame_size_);
       return;
     }
 
     if (length > 0xF0) {
       // Invalid length
       ESP_LOGW(TAG, "Invalid length");
-      set_state (STATE_BUS_CHECK);
+      command_failed();
       return;
     }
 
@@ -542,39 +555,16 @@ void BasenController::uart_loop() {
     return;
   }
 
-  if (this->rx_required_ == 7) {
-    // Only one data byte, most likely an error code:
-    // 00H Normal
-    // 01H VER Error
-    // 02H CHKSUM Error
-    // 03H LCHKSUM Error
-    // 04H CID2 Invalid
-    // 05H Command Format Error
-    // 06H Invalid data
-    current_->handle_status ((frame_[2] | (uint16_t)frame_[3] << 8), frame_[4]);
-
-    // 00 = success
-    if (frame_[4] == 0x00) {
-      ESP_LOGD(TAG, "Received success: %02X %02X %02X", frame_[1], frame_[2], frame_[3]);
-      set_state (STATE_IDLE);
-    } else {
-      ESP_LOGW(TAG, "Received error: %02X %02X %02X %02X", frame_[1], frame_[2], frame_[3], frame_[4]);
-      set_state (STATE_BUS_CHECK);
-    }
-
-    return;
-  }
-
   // ESP_LOGD(TAG, "Received data: ");
   // for (size_t i = 0; i < this->data_required_; i++) {
   //   ESP_LOGD(TAG, "%02X ", data[i]);
   // }
   // ESP_LOGD(TAG, "");
 
-  // Check EOI
-  if (frame_[frame_size_ - 1] != EOI) {
-    ESP_LOGW(TAG, "Invalid EOI byte: %02X", frame_[frame_size_ - 1]);
-    set_state (STATE_BUS_CHECK);
+  // Check EOI (ignore any bytes received after the frame)
+  if (frame_[rx_required_ - 1] != EOI) {
+    ESP_LOGW(TAG, "Invalid EOI byte: %02X", frame_[rx_required_ - 1]);
+    command_failed();
     return;
   }
 
@@ -583,13 +573,38 @@ void BasenController::uart_loop() {
 
   // Verify checksum
   uint8_t checksum = BasenController::checksum(frame_, sizeof(header_) + data_size);
-  
+
   if (checksum != data[data_size]) {
     ESP_LOGW(TAG, "Checksum mismatch: %02X != %02X", checksum, data[data_size]);
-    set_state (STATE_BUS_CHECK);
+    command_failed();
     return;
   }
-  
+
+  retry_ = 0;  // Got a valid response, reset retry counter
+
+  if (data_size == 1) {
+    // Only one data byte, most likely an error code:
+    // 00H Normal
+    // 01H VER Error
+    // 02H CHKSUM Error
+    // 03H LCHKSUM Error
+    // 04H CID2 Invalid
+    // 05H Command Format Error
+    // 06H Invalid data
+    current_->handle_status (frame_[2], data[0]);
+
+    // 00 = success
+    if (data[0] == 0x00) {
+      ESP_LOGD(TAG, "Received success: %02X %02X %02X", frame_[1], frame_[2], frame_[3]);
+      set_state (STATE_IDLE);
+    } else {
+      ESP_LOGW(TAG, "Received error: %02X %02X %02X %02X", frame_[1], frame_[2], frame_[3], data[0]);
+      set_state (STATE_BUS_CHECK);
+    }
+
+    return;
+  }
+
   // Handle data
   if (current_->handle_data (header_, data, data_size)) {
     // Got all data for current BMS
@@ -696,15 +711,6 @@ void BasenController::loop() {
 
   // Call the UART loop
   uart_loop();
-}
-
-/**
- * @brief Sets up the BasenBMS device.
- *
- * This method initializes the BasenBMS by adding startup commands
- * that will be executed when the device is set up.
- */
-void BasenBMS::setup() {
 }
 
 /**
@@ -999,15 +1005,17 @@ void BasenBMS::enable() {
 /**
  * @brief Handles a timeout event for the BasenBMS device.
  * 
- * This method is called when a timeout occurs while waiting for a response from the device. It sets the device as disconnected,
- * clears the transmission buffer, and updates the device state to BMS_STATE_DONE to mark it as finished.
+ * This method is called when a timeout occurs while waiting for a response from the device. It sets the device as disconnected
+ * and updates the device state to BMS_STATE_DONE to mark it as finished.
  * This allows the controller to move on to the next device or retry as needed.
- * 
+ *
+ * The transmission buffer is kept, so pending startup and write commands are sent when the device is back online.
+ * Unsupported commands are answered with an error status, so a timeout means the device is not reachable.
+ *
  */
 void BasenBMS::timeout() {
   // Timeout
   this->set_connected(false);
-  this->tx_buffer_.clear();
 
   this->state_ = BasenBMS::BMS_STATE_DONE;  // Mark as finished
 }
@@ -1128,6 +1136,7 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
           ESP_LOGW(TAG, "Status bitmask count too large: %d", count);
           break;
         }
+        memset (this->status_bitmask_, 0, sizeof(this->status_bitmask_));
         memcpy (this->status_bitmask_, position + 2, count * size);
         break;
       case 0x07:  // Cycles
@@ -1223,20 +1232,20 @@ void BasenBMS::add_startup_commands() {
  * @param status_code The status code received from the BMS.
  * 
  */
-void BasenBMS::handle_status (const uint16_t command, const uint8_t status_code) {
+void BasenBMS::handle_status (const uint8_t command, const uint8_t status_code) {
   // Remove current frame from TX buffer
   if (!tx_buffer_.empty()) {
     tx_buffer_.pop_front();
   }
 
-  switch (command & 0xFF) {
+  switch (command) {
     case COMMAND_HEATING_ON_TEMPERATURE_WRITE:
     case COMMAND_HEATING_OFF_TEMPERATURE_WRITE:
       if (status_code == 0x00) {
         ESP_LOGI(TAG, "Heating temperature command successful for address %02X", this->address_);
 
         // Update heating off temperature value
-        if (((command & 0xFF) == COMMAND_HEATING_OFF_TEMPERATURE_WRITE) &&
+        if ((command == COMMAND_HEATING_OFF_TEMPERATURE_WRITE) &&
             (this->heating_off_temperature_number_ != nullptr)) {
           this->heating_off_temperature_ = this->heating_off_temperature_number_->state;
           ESP_LOGI(TAG, "Updated heating off temperature to %.1f °C for address %02X", this->heating_off_temperature_, this->address_);
@@ -1244,7 +1253,7 @@ void BasenBMS::handle_status (const uint16_t command, const uint8_t status_code)
       } else {
         ESP_LOGW(TAG, "Heating temperature command failed with status %02X for address %02X", status_code, this->address_);
         // Read back the current temperature
-        if ((command & 0xFF) == COMMAND_HEATING_ON_TEMPERATURE_WRITE) {
+        if (command == COMMAND_HEATING_ON_TEMPERATURE_WRITE) {
           this->queue_command(COMMAND_HEATING_ON_TEMPERATURE);
         } else {
           this->queue_command(COMMAND_HEATING_OFF_TEMPERATURE);
@@ -1354,7 +1363,7 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       return true;
     default:
       ESP_LOGW(TAG, "Address: %d Unknown command: %02X", this->address_, header[2]);
-      return true;
+      break;
   }
 
   return false;
@@ -1511,10 +1520,6 @@ void BasenBMS::handle_parameters (const uint8_t *data, const uint8_t length, uin
   }
 }
 
-void BasenBMS::dump_config() {
-
-}
-
 void BasenNumber::dump_config() {
   LOG_NUMBER("", "BasenNumber", this);
 }
@@ -1550,35 +1555,14 @@ void BasenNumber::control(float value) {
   this->parent_->queue_data(this->type_, data);
 }
 
-void BasenButton::dump_config() {
-  LOG_BUTTON("", "BasenButton", this);
-}
-
-void BasenButton::press_action() {
-  if (this->parent_ == nullptr) {
-      ESP_LOGE("BasenButton", "Parent is null");
-      return;
-  }
-  if (this->type_ == 0) {
-    ESP_LOGE("BasenButton", "Parameter type is not set");
+void BasenSwitch::setup() {
+  // Only the enable switch is restored, all other switches get their state from the BMS
+  if (this->type_ != 0x00)
     return;
-  }
 
-  // TODO
-  if (this->type_ != COMMAND_HEATING_SET) {
-    ESP_LOGE("BasenButton", "Unsupported parameter type: %d", this->type_);
-    return;
-  }
-
-  // Data
-  std::vector<uint8_t> data = {static_cast<uint8_t>(this->data_)};
-
-  // Add to parent's TX buffer
-  this->parent_->queue_data(this->type_, data);
-}
-
-BasenSwitch::BasenSwitch(bool initial_state) {
-  this->publish_state(initial_state);
+  auto initial_state = this->get_initial_state_with_restore_mode();
+  if (initial_state.has_value())
+    this->publish_state(*initial_state);
 }
 
 void BasenSwitch::dump_config() {
