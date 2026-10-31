@@ -65,13 +65,14 @@ CONFIG_SCHEMA = cv.Schema(
 )
 
 
-def to_code(config):
-    hub = yield cg.get_variable(config[CONF_BASEN_BMS_ID])
+async def to_code(config):
+    hub = await cg.get_variable(config[CONF_BASEN_BMS_ID])
     for key, command in SWITCHES.items():
         if key in config:
             conf = config[key]
             var = cg.new_Pvariable(conf[CONF_ID])
-            yield switch.register_switch(var, conf)
+            await cg.register_component(var, conf)
+            await switch.register_switch(var, conf)
             cg.add(getattr(hub, f"set_{key}_switch")(var))
             cg.add(var.set_parent(hub))
             cg.add(var.set_type(command[0], command[1], command[2]))

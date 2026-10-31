@@ -404,26 +404,26 @@ for param in PARAMETERS:
 for param in ALARM_PARAMETERS:
     CONFIG_SCHEMA = add_param_sensor(CONFIG_SCHEMA, param)
 
-def to_code(config):
-    hub = yield cg.get_variable(config[CONF_BASEN_BMS_ID])
+async def to_code(config):
+    hub = await cg.get_variable(config[CONF_BASEN_BMS_ID])
     for key in SENSORS:
         if key in config:
             conf = config[key]
-            sens = yield sensor.new_sensor(conf)
+            sens = await sensor.new_sensor(conf)
             cg.add(getattr(hub, f"set_{key}_sensor")(sens))
     for i in range(1, 17):
         key = f"cell_voltage_{i:02}"
         if key in config:
             conf = config[key]
-            sens = yield sensor.new_sensor(conf)
+            sens = await sensor.new_sensor(conf)
             cg.add(getattr(hub, f"set_cell_voltage_sensor")(sens, i-1))
     for index, key in enumerate(PARAMETERS):
         if key in config:
             conf = config[key]
-            sens = yield sensor.new_sensor(conf)
+            sens = await sensor.new_sensor(conf)
             cg.add(getattr(hub, f"set_param_sensor")(sens, index))
     for index, key in enumerate(ALARM_PARAMETERS):
         if key in config:
             conf = config[key]
-            sens = yield sensor.new_sensor(conf)
+            sens = await sensor.new_sensor(conf)
             cg.add(getattr(hub, f"set_alarm_param_sensor")(sens, index))

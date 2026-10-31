@@ -1,7 +1,6 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import text_sensor
-from esphome.const import CONF_ID, CONF_ICON
 
 from . import CONF_BASEN_BMS_ID, BasenBMS
 
@@ -46,11 +45,9 @@ CONFIG_SCHEMA = cv.Schema(
 )
 
 
-def to_code(config):
-    hub = yield cg.get_variable(config[CONF_BASEN_BMS_ID])
+async def to_code(config):
+    hub = await cg.get_variable(config[CONF_BASEN_BMS_ID])
     for key in TEXT_SENSORS:
         if key in config:
-            conf = config[key]
-            sens = cg.new_Pvariable(conf[CONF_ID])
-            yield text_sensor.register_text_sensor(sens, conf)
+            sens = await text_sensor.new_text_sensor(config[key])
             cg.add(getattr(hub, f"set_{key}_text_sensor")(sens))

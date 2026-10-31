@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import binary_sensor
-from esphome.const import CONF_ICON, CONF_ID, ICON_SIGNAL
+from esphome.const import ICON_SIGNAL
 
 from . import CONF_BASEN_BMS_ID, BasenBMS
 
@@ -50,11 +50,9 @@ CONFIG_SCHEMA = cv.Schema(
 )
 
 
-def to_code(config):
-    hub = yield cg.get_variable(config[CONF_BASEN_BMS_ID])
+async def to_code(config):
+    hub = await cg.get_variable(config[CONF_BASEN_BMS_ID])
     for key in BINARY_SENSORS:
         if key in config:
-            conf = config[key]
-            sens = cg.new_Pvariable(conf[CONF_ID])
-            yield binary_sensor.register_binary_sensor(sens, conf)
+            sens = await binary_sensor.new_binary_sensor(config[key])
             cg.add(getattr(hub, f"set_{key}_binary_sensor")(sens))
