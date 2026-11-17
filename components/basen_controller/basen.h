@@ -11,6 +11,7 @@
 #include "esphome/components/uart/uart.h"
 
 #include <vector>
+#include <cstdint>
 #include <deque>
 
 namespace esphome {
@@ -100,7 +101,7 @@ class BasenController : public uart::UARTDevice, public Component {
 
  protected:
   void set_state(uint8_t state);
-  bool empty_rx (void);
+  uint16_t empty_rx (void);
   uint8_t checksum (const uint8_t *data, uint8_t len);
   
   void send_frame(BasenCommand &command);
@@ -131,7 +132,10 @@ class BasenController : public uart::UARTDevice, public Component {
   uint8_t rx_required_{0};
 
   bool enable_{false};
-  uint32_t last_bus_check_{0};
+  uint32_t bus_check_start_{0};     // Start of the current bus check
+  uint32_t last_bus_activity_{0};   // Last time data was received during the bus check
+  uint32_t last_bus_warning_{0};    // Last "bus is not idle" warning
+  uint16_t bus_discarded_{0};       // Number of bytes discarded during the current bus check
   uint32_t last_command_{0};
   uint32_t throttle_{0};
 
@@ -285,6 +289,7 @@ class BasenBMS : public PollingComponent {
 
   void set_parent(BasenController *parent) { parent_ = parent; parent->register_bms(this); }
   void set_address(uint8_t address) { address_ = address; }
+  void set_max_failed_updates(uint8_t max_failed_updates) { max_failed_updates_ = max_failed_updates; }
 
   // Sensors
   void set_bms_version_text_sensor(text_sensor::TextSensor *bms_version_text_sensor) {
@@ -441,6 +446,9 @@ class BasenBMS : public PollingComponent {
   friend BasenSwitch;
   uint8_t address_{1};
   uint16_t timeout_count_{0};
+  uint16_t failed_update_count_{0};  // Total number of failed update cycles
+  uint8_t failed_updates_{0};        // Consecutive failed update cycles
+  uint8_t max_failed_updates_{3};    // Consecutive failed update cycles until the device is marked offline
 
   enum {
     BMS_STATE_IDLE = 0,
@@ -523,7 +531,7 @@ class BasenBMS : public PollingComponent {
 
   void disable();
   void enable();
-  void timeout();
+  void update_failed();
 
   void set_connected (bool connected) {
     this->connected_ = connected;

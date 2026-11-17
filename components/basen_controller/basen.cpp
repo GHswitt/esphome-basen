@@ -10,6 +10,11 @@ namespace basen {
 
 static const char *const TAG = "basen";
 
+// Bus check: the bus is idle when no data was received for this time (ms, about 48 bytes at 9600 baud)
+static constexpr uint32_t BUS_IDLE_TIME = 50;
+// Bus check: interval of the "bus is not idle" warning while data is received (ms)
+static constexpr uint32_t BUS_BUSY_WARNING_TIME = 3000;
+
 // For ease of use, generate this bit mask from status bit mask
 // # Bit 0     General alarm                                0000 0000 0000 0001         0x0001 
 // # Bit 1     Battery high voltage alarm                   0000 0000 0000 0010         0x0002
@@ -240,6 +245,7 @@ void BasenController::dump_config() {
   for (auto &device : this->devices_) {
     ESP_LOGI(TAG, " Device %02X:", device->address_);
     ESP_LOGI(TAG, "  Timeout count: %d", device->timeout_count_);
+    ESP_LOGI(TAG, "  Failed updates: %d (offline after %d in a row)", device->failed_update_count_, device->max_failed_updates_);
   }
 }
 
@@ -263,6 +269,15 @@ void BasenController::set_state(uint8_t state)
   if (this->state_ == state)
     return;
 
+  if (state == STATE_BUS_CHECK) {
+    // Start a new bus check, wait at least BUS_IDLE_TIME
+    uint32_t now = millis();
+    this->bus_check_start_ = now;
+    this->last_bus_activity_ = now;
+    this->last_bus_warning_ = now;
+    this->bus_discarded_ = 0;
+  }
+
   // Change state
   this->state_ = state;
 }
@@ -272,22 +287,19 @@ void BasenController::set_state(uint8_t state)
  * @brief Empties the RX buffer by reading and discarding all available bytes.
  *
  * This function continuously reads bytes from the RX buffer until it is empty
- * or a maximum of 255 bytes have been read. It returns true if any bytes were
- * read and discarded, otherwise returns false.
+ * or a maximum of 255 bytes have been read.
  *
- * @return true if any bytes were removed from the RX buffer, false otherwise.
+ * @return The number of bytes removed from the RX buffer.
  */
-bool BasenController::empty_rx (void) {
+uint16_t BasenController::empty_rx (void) {
   uint8_t data;
-  uint8_t count = 255;
-  bool result = false;
-  while (available() && count--) {
+  uint16_t count = 0;
+  while ((count < 255) && available()) {
     read_byte(&data);
-    //ESP_LOGD(TAG, "Emptying RX buffer: %02X", data);
-    result = true;
+    count++;
   }
 
-  return result;
+  return count;
 }
 
 
@@ -359,7 +371,7 @@ void BasenController::send_frame(BasenCommand &command) {
     this->flow_control_pin_->digital_write(false);
   }
 
-  // TODO
+  // Remember the header of the sent command to check the response against it
   memcpy(this->header_, command.frame.data(), sizeof(header_));
 
   ESP_LOGV(TAG, "Sending frame[%d]: %02X %02X %02X %02X %02X %02X", command.frame.size (), command.frame[0], command.frame[1], command.frame[2], command.frame[3], command.frame[4], command.frame[5]);
@@ -375,16 +387,29 @@ void BasenController::send_frame(BasenCommand &command) {
  * @brief Handles a failed command (timeout or invalid response).
  *
  * The command stays in the TX queue and is sent again once. If the retry fails as well,
- * the device is marked as offline (or disabled) and the controller moves on to the next device.
+ * the update cycle of the device has failed (see BasenBMS::update_failed) or the device is
+ * disabled, and the controller moves on to the next device.
  * The controller state is set to bus check in both cases.
  */
 void BasenController::command_failed ()
 {
+  // header_ holds the header of the command that was sent last
+  if (this->frame_size_ == 0) {
+    ESP_LOGW(TAG, "Command %02X %02X for address %02X failed (attempt %d of 2), no data received",
+             this->header_[2], this->header_[3], current_->address_, retry_ + 1);
+  } else {
+    // Log the start of the received data (only on failure, to keep the load low)
+    ESP_LOGW(TAG, "Command %02X %02X for address %02X failed (attempt %d of 2), %u bytes received: %s%s",
+             this->header_[2], this->header_[3], current_->address_, retry_ + 1, this->frame_size_,
+             format_hex_pretty(this->frame_, std::min<uint8_t>(this->frame_size_, 16)).c_str(),
+             (this->frame_size_ > 16) ? " ..." : "");
+  }
+
   if (retry_++ > 0) {
     // Second try, check if enabled
     if (current_->is_enabled()) {
-      // Mark as offline and move to next device
-      current_->timeout();
+      // Count the failed update and move to next device
+      current_->update_failed();
     } else {
       // Disable device
       current_->disable();
@@ -450,6 +475,11 @@ void BasenController::update_device ()
       current_->queue_command (COMMAND_INFO);
     }
 
+    // Data received before the command is sent cannot be the response, discard it
+    uint16_t discarded = this->empty_rx();
+    if (discarded)
+      ESP_LOGV(TAG, "Discarded %u bytes before sending to address %02X", discarded, current_->address_);
+
     BasenCommand command = current_->tx_buffer_.front();
     this->send_frame(command);
   }
@@ -480,22 +510,33 @@ void BasenController::update_device ()
 void BasenController::uart_loop() {
   // Check state
   switch (this->state_) {
-    case STATE_BUS_CHECK:
-      // Check if there are no transmissions on the bus
-      if (millis() - last_bus_check_ >= 3000) {
-        // Check and empty RX buffer
-        bool ret = empty_rx();
-        this->last_bus_check_ = millis();
+    case STATE_BUS_CHECK: {
+      // The bus is idle when no data was received for BUS_IDLE_TIME
+      uint32_t now = millis();
+      uint16_t discarded = empty_rx();
+      if (discarded) {
+        this->bus_discarded_ = std::min<uint32_t>(this->bus_discarded_ + discarded, UINT16_MAX);
+        this->last_bus_activity_ = now;
 
-        if (ret) {
-          ESP_LOGW(TAG, "Bus is not idle...");
-          // Check again in 3 seconds
-          return;
+        if (now - this->last_bus_warning_ >= BUS_BUSY_WARNING_TIME) {
+          ESP_LOGW(TAG, "Bus is not idle for %" PRIu32 " ms, discarded %u bytes",
+                   now - this->bus_check_start_, this->bus_discarded_);
+          this->last_bus_warning_ = now;
         }
-        ESP_LOGD(TAG, "Bus is idle");
-        set_state (STATE_IDLE);
+        return;
       }
+
+      if (now - this->last_bus_activity_ < BUS_IDLE_TIME)
+        return;
+
+      if (this->bus_discarded_)
+        ESP_LOGW(TAG, "Bus is idle after %" PRIu32 " ms, discarded %u bytes",
+                 this->last_bus_activity_ - this->bus_check_start_, this->bus_discarded_);
+      else
+        ESP_LOGD(TAG, "Bus is idle");
+      set_state (STATE_IDLE);
       return;
+    }
     case STATE_IDLE:
       // Start sending commands
       this->update_device();
@@ -543,10 +584,23 @@ void BasenController::uart_loop() {
     ESP_LOGV(TAG, "Received header: %02X %02X %02X %02X", frame_[0], frame_[1], frame_[2], frame_[3]);
 
     if (frame_[0] != SOI || frame_[1] != this->header_[1] || frame_[2] != this->header_[2]) {
-        ESP_LOGW(TAG, "Header does not match expected values: %02X %02X %02X != %02X %02X %02X", 
-                 frame_[0], frame_[1], frame_[2], this->header_[0], this->header_[1], this->header_[2]);
-        command_failed();
-        return;
+      // Stray data before the response, e.g. a status frame a BMS sends for a "command" it found
+      // inside the response of another BMS. Skip everything up to the expected header and keep
+      // waiting for the response. If it does not arrive, the timeout handles it.
+      uint8_t skip = 1;
+      for (; skip < this->frame_size_; skip++) {
+        if ((frame_[skip] == SOI) &&
+            ((skip + 1 >= this->frame_size_) || (frame_[skip + 1] == this->header_[1])) &&
+            ((skip + 2 >= this->frame_size_) || (frame_[skip + 2] == this->header_[2])))
+          break;  // Found (the start of) the expected header
+      }
+
+      ESP_LOGD(TAG, "Skipped %u bytes before response from address %02X: %s", skip, current_->address_,
+               format_hex_pretty(this->frame_, std::min<uint8_t>(skip, 16)).c_str());
+
+      this->frame_size_ -= skip;
+      memmove(this->frame_, this->frame_ + skip, this->frame_size_);
+      return;
     }
 
     // Check length
@@ -581,12 +635,6 @@ void BasenController::uart_loop() {
     // Return here to keep loop time short
     return;
   }
-
-  // ESP_LOGD(TAG, "Received data: ");
-  // for (size_t i = 0; i < this->data_required_; i++) {
-  //   ESP_LOGD(TAG, "%02X ", data[i]);
-  // }
-  // ESP_LOGD(TAG, "");
 
   // Check EOI (ignore any bytes received after the frame)
   if (frame_[rx_required_ - 1] != EOI) {
@@ -685,20 +733,6 @@ void BasenController::loop() {
 
   // Check if enabled
   if (!enable_) {
-#if 0
-    if (current_ != NULL) {
-      // Reset current device
-      current_->state_= BasenBMS::BMS_STATE_IDLE;
-      current_ = NULL;
-    }
-
-    for (auto &device : this->devices_) {
-      device->set_connected(false);
-      device->tx_buffer_.clear();
-    }
-
-    set_state (STATE_BUS_CHECK);
-#endif
     return;
   }
 
@@ -1030,19 +1064,29 @@ void BasenBMS::enable() {
 }
 
 /**
- * @brief Handles a timeout event for the BasenBMS device.
- * 
- * This method is called when a timeout occurs while waiting for a response from the device. It sets the device as disconnected
- * and updates the device state to BMS_STATE_DONE to mark it as finished.
- * This allows the controller to move on to the next device or retry as needed.
+ * @brief Handles a failed update cycle of the BasenBMS device.
+ *
+ * This method is called when a command failed twice (timeout or invalid response). The device is only
+ * marked as disconnected after max_failed_updates_ consecutive failed update cycles, so a single lost
+ * frame does not mark it offline. Until then the last values are kept. The device state is set to
+ * BMS_STATE_DONE to mark it as finished, so the controller can move on to the next device.
  *
  * The transmission buffer is kept, so pending startup and write commands are sent when the device is back online.
  * Unsupported commands are answered with an error status, so a timeout means the device is not reachable.
  *
  */
-void BasenBMS::timeout() {
-  // Timeout
-  this->set_connected(false);
+void BasenBMS::update_failed() {
+  this->failed_update_count_++;
+  if (this->failed_updates_ < 255)
+    this->failed_updates_++;
+
+  if (this->failed_updates_ >= this->max_failed_updates_) {
+    if (this->connected_)
+      ESP_LOGW(TAG, "Address %02X offline after %d failed updates", this->address_, this->failed_updates_);
+    this->set_connected(false);
+  } else {
+    ESP_LOGW(TAG, "Address %02X update failed (%d of %d until offline)", this->address_, this->failed_updates_, this->max_failed_updates_);
+  }
 
   this->state_ = BasenBMS::BMS_STATE_DONE;  // Mark as finished
 }
@@ -1175,8 +1219,7 @@ void BasenBMS::handle_info (const uint8_t *data, uint8_t length) {
       case 0x09:  // SoH
         this->soh_ = data16 / 100.0f;
         break;
-      default:        
-        //ESP_LOGV(TAG, "Data type %02X with count %d", type, count);
+      default:
         break;
     }
 
@@ -1424,6 +1467,9 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
       handle_info(data, length);
       // All data has been updated, mark the device as updated and connected
       this->state_ = BasenBMS::BMS_STATE_PUBLISH;
+      if (this->failed_updates_ >= this->max_failed_updates_)
+        ESP_LOGI(TAG, "Address %02X back online", this->address_);
+      this->failed_updates_ = 0;
       set_connected (true);
       return true;
     default:
@@ -1485,7 +1531,6 @@ uint8_t BasenBMS::handle_cell_voltages (const uint8_t *data, uint8_t length) {
       else
         this->cell_balancing_ &= ~(1 << i);      
     }
-    //ESP_LOGV(TAG, "Cell %d voltage: %.3f V", i + 1, voltage_V);
 
     // Update average, min and max voltages
     cell_avg_voltage += voltage_V;

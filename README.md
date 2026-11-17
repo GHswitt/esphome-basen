@@ -33,6 +33,14 @@ add `flow_control_pin: <PIN>` to the `basen_controller` component.
 The parameter `throttle` for `basen_controller` allows to set the minimum interval between commands sent to the BMS.
 The default for `throttle`, if not set, is `1s`.
 
+A failed command (timeout or invalid response) is sent again once. If the retry fails as well, the update of the BMS has failed
+and its last values are kept. The parameter `max_failed_updates` for `basen_bms` sets how many updates in a row have to fail
+before the BMS is marked as not connected. The default is `3`, `1` marks it offline after the first failed update.
+
+After a failed command, the bus has to be idle (no data received for 50 ms) before the next command is sent.
+A failed command is logged with the number of received bytes and the first 16 received bytes.
+The log output of the controller (`dump_config`) shows the number of timeouts and failed updates for each BMS.
+
 ## Supported Sensor Metrics
 
 - connected: Indicates if the BMS is currently connected (online status).
@@ -619,6 +627,11 @@ Notes:
 
 - All multi-byte values are big-endian.
 - The protocol supports multiple devices on the same bus by address.
+- With several BMS on the bus, a BMS may find a "command" inside the response of another BMS, because it also accepts
+  the start byte `0x7C`. Example: the info response `7E 02 01 7C 01 10 ...` of address `02` contains `7C 01 10`
+  (length `0x7C`, version `01`, 16 cells), which BMS `01` reads as command `0x10` for address `01`. It answers with
+  the status frame `7C 01 10 01 02 FE 0D` (checksum error), which can arrive just before its next response.
+  The controller skips such data before the expected response header.
 
 ## Debugging
 
@@ -628,8 +641,7 @@ If this component doesn't work out of the box for your device please update your
 logger:
   level: VERY_VERBOSE
   logs:
-    basen_controller: VERY_VERBOSE
-    basen_bms: VERY_VERBOSE
+    basen: VERY_VERBOSE
     scheduler: DEBUG
     component: DEBUG
     sensor: DEBUG

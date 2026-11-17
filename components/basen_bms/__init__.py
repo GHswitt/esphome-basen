@@ -18,12 +18,14 @@ BasenBMS = basen_ns.class_("BasenBMS", cg.PollingComponent)
 
 CONF_BASEN_BMS_ID = "basen_bms_id"
 CONF_ADDRESS = "address"
+CONF_MAX_FAILED_UPDATES = "max_failed_updates"
 
 CONFIG_SCHEMA = (
     cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(BasenBMS),
         cv.Required(CONF_ADDRESS): cv.int_range(min=0, max=255),
+        cv.Optional(CONF_MAX_FAILED_UPDATES, default=3): cv.int_range(min=1, max=255),
     }
     )
     .extend(cv.polling_component_schema("5s"))
@@ -34,6 +36,7 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     cg.add(var.set_address(config[CONF_ADDRESS]))
+    cg.add(var.set_max_failed_updates(config[CONF_MAX_FAILED_UPDATES]))
     hub = await cg.get_variable(config[CONF_BASEN_CONTROLLER_ID])
     cg.add(var.set_parent(hub))
 
