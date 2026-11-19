@@ -399,9 +399,10 @@ void BasenController::command_failed ()
              this->header_[2], this->header_[3], current_->address_, retry_ + 1);
   } else {
     // Log the start of the received data (only on failure, to keep the load low)
+    [[maybe_unused]] char hex_buf[format_hex_pretty_size(16)];
     ESP_LOGW(TAG, "Command %02X %02X for address %02X failed (attempt %d of 2), %u bytes received: %s%s",
              this->header_[2], this->header_[3], current_->address_, retry_ + 1, this->frame_size_,
-             format_hex_pretty(this->frame_, std::min<uint8_t>(this->frame_size_, 16)).c_str(),
+             format_hex_pretty_to(hex_buf, this->frame_, std::min<uint8_t>(this->frame_size_, 16), '.'),
              (this->frame_size_ > 16) ? " ..." : "");
   }
 
@@ -595,8 +596,10 @@ void BasenController::uart_loop() {
           break;  // Found (the start of) the expected header
       }
 
-      ESP_LOGD(TAG, "Skipped %u bytes before response from address %02X: %s", skip, current_->address_,
-               format_hex_pretty(this->frame_, std::min<uint8_t>(skip, 16)).c_str());
+      [[maybe_unused]] char hex_buf[format_hex_pretty_size(16)];
+      ESP_LOGD(TAG, "Skipped %u bytes before response from address %02X: %s%s", skip, current_->address_,
+               format_hex_pretty_to(hex_buf, this->frame_, std::min<uint8_t>(skip, 16), '.'),
+               (skip > 16) ? " ..." : "");
 
       this->frame_size_ -= skip;
       memmove(this->frame_, this->frame_ + skip, this->frame_size_);
@@ -1458,11 +1461,14 @@ bool BasenBMS::handle_data (const uint8_t *header, const uint8_t *data, uint8_t 
     case COMMAND_CHARGE_CALIBRATION_1:
     case COMMAND_CHARGE_CALIBRATION_2:
     case COMMAND_DISCHARGE_CALIBRATION_1:
-    case COMMAND_DISCHARGE_CALIBRATION_2:
+    case COMMAND_DISCHARGE_CALIBRATION_2: {
       // Response format is unknown, log it for analysis
-      ESP_LOGI(TAG, "Address: %d Calibration reply received for command %02X: %s",
-               this->address_, header[2], format_hex_pretty(data, length).c_str());
+      [[maybe_unused]] char hex_buf[format_hex_pretty_size(64)];
+      ESP_LOGI(TAG, "Address: %d Calibration reply received for command %02X: %s%s",
+               this->address_, header[2], format_hex_pretty_to(hex_buf, data, std::min<uint8_t>(length, 64), '.'),
+               (length > 64) ? " ..." : "");
       break;
+    }
     case COMMAND_INFO:
       handle_info(data, length);
       // All data has been updated, mark the device as updated and connected
